@@ -23,3 +23,6 @@ yarn-error.log*
 
 # Build artifacts
 *.tsbuildinfo
+
+# Generated example assets (produced at runtime by running examples)
+examples/assets/

@@ -1,9 +1,0 @@
-{
-  "charset": 62,
-  "fontSize": 256,
-  "textureSize": [2048, 2048],
-  "atlasCount": 1,
-  "fieldRange": 4,
-  "generatedAt": "2026-04-06T23:45:15.955Z",
-  "engine": "msdfgen-wasm"
-}
