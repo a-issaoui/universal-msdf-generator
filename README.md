@@ -55,24 +55,38 @@ npm install @a-issaoui/universal-msdf-generator
 UMG provides a sophisticated CLI for build-time asset generation.
 
 ```bash
-# Generate Orbitron from Google Fonts with automatic "Smart Re-use"
+# Generate from Google Fonts with smart re-use
 npx universal-msdf "Orbitron" --out ./assets
 
-# Process a local file with specific charset and weight
-npx universal-msdf "./fonts/MyFont.ttf" --charset "alphanumeric" --weight 700
+# Batch mode: multiple fonts in one command
+npx universal-msdf Roboto "Open Sans" Lato --concurrency 2 --out ./assets
 
-# Force re-generation (bypass smart re-use)
-npx universal-msdf "Roboto" --force
+# Local file with custom quality settings
+npx universal-msdf "./fonts/MyFont.ttf" --size 64 --range 8 --edge-coloring inktrap
+
+# Force re-generation and output both JSON and FNT
+npx universal-msdf "Roboto" --force --format both --weight 700
 ```
 
 ### CLI Flags
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--out`, `-o` | Output directory | Current Dir |
-| `--charset`, `-c` | Preset name (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or a literal character string | `alphanumeric` |
-| `--reuse` | Enable "Smart Re-use" to skip existing files | `true` |
-| `--force`, `-f` | Disable "Smart Re-use" and force generation | `false` |
-| `--verbose`, `-v` | Enable detailed processing logs | `true` |
+| `--out`, `-o` | Output directory | `./output` |
+| `--charset`, `-c` | Preset (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or literal string | `alphanumeric` |
+| `--size`, `-s` | Font size in pixels | `48` |
+| `--range`, `-r` | Distance field range in pixels | `4` |
+| `--format` | Output format: `json` \| `fnt` \| `both` \| `all` | `json` |
+| `--weight`, `-w` | Font weight, e.g. `400`, `700`, `bold` | `400` |
+| `--style` | Font style, e.g. `normal`, `italic` | `normal` |
+| `--name`, `-n` | Override output filename stem | derived |
+| `--edge-coloring` | Edge algorithm: `simple` \| `inktrap` \| `distance` | `simple` |
+| `--padding` | Glyph padding in atlas (px) | `2` |
+| `--concurrency` | Max parallel fonts in batch mode | unlimited |
+| `--reuse` | Skip generation if output files exist | `true` |
+| `--no-reuse` | Always re-generate | — |
+| `--force`, `-f` | Force re-generation (overrides `--reuse`) | `false` |
+| `--verbose`, `-v` | Enable detailed logs | `true` |
+| `--quiet`, `-q` | Suppress all non-error output | — |
 
 ---
 
@@ -116,16 +130,20 @@ const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
 | `outputFormat` | `'json' \| 'fnt' \| 'both' \| 'all'` | `'json'` | Which layout file(s) to write |
 | `charset` | `string \| string[]` | `'alphanumeric'` | Preset name or literal character string |
 | `fontSize` | `number` | `48` | Glyph rasterization size in pixels |
-| `fieldRange` | `number` | `4` | SDF distance range in pixels |
-| `textureSize` | `[number, number]` | auto | Atlas texture dimensions |
+| `fieldRange` | `number` | `4` | SDF distance range in pixels — `2–4` for sharp UI text, `6–8` for glow/outline effects |
+| `textureSize` | `[number, number]` | auto | Atlas texture dimensions; auto-sizes to next POT if omitted |
+| `edgeColoring` | `'simple' \| 'inktrap' \| 'distance'` | `'simple'` | Edge coloring algorithm — `inktrap` reduces artifacts on decorative glyphs |
+| `padding` | `number` | `2` | Glyph padding in atlas (px) — prevents bleed, required for mipmapping |
+| `fixOverlaps` | `boolean` | `true` | Pre-process glyph paths to fix overlapping contours |
 | `weight` | `string` | `'400'` | Font weight (used in output filename) |
 | `style` | `string` | `'normal'` | Font style (used in output filename) |
 | `name` | `string` | derived | Override the output filename stem |
-| `reuseExisting` | `boolean` | `false` | Skip generation if output files already exist |
+| `reuseExisting` | `boolean` | `true` | Skip generation if output files already exist |
 | `force` | `boolean` | `false` | Regenerate even when `reuseExisting` is set |
 | `concurrency` | `number` | unlimited | Max parallel fonts in `generateMultiple` |
 | `generationTimeout` | `number` | `60000` | Max ms before a generation attempt times out |
 | `verbose` | `boolean` | `true` | Log progress to stdout |
+| `onProgress` | `function` | — | `(progress, completed, total) => void` progress callback |
 
 ---
 
