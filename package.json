@@ -17,7 +17,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "universal-msdf": "./dist/cli.cjs"
+    "universal-msdf": "dist/cli.cjs"
   },
   "exports": {
     ".": {
