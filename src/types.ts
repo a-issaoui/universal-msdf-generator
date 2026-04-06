@@ -29,9 +29,9 @@ export interface MSDFGlyph {
 }
 
 /**
- * Interface representing the complete MSDF layout data from msdf-bmfont-xml.
+ * Interface representing the complete MSDF layout data (BMFont format).
  * The `pages` field holds filename strings (e.g. "font.png"), never base64 data URIs.
- * Base64 textures are kept separately in MSDFSuccess.textures for file persistence.
+ * Base64 textures are kept separately in MSDFSuccess.atlases for file persistence.
  */
 export interface MSDFLayout {
   /** Filenames of atlas pages, e.g. ["font.png"] — NOT base64 data URIs. */
@@ -141,7 +141,7 @@ export interface GenerateOptions {
   verbose?: boolean;
   /** Progress callback handler */
   onProgress?: (progress: number, completed: number, total: number) => void;
-  /** Max ms to wait for msdf-bmfont-xml before rejecting. Default: 60000. */
+  /** Max ms to wait for MSDF generation before rejecting. Default: 60000. */
   generationTimeout?: number;
   /** Max concurrent fonts when using generateMultiple. Default: unlimited. */
   concurrency?: number;

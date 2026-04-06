@@ -284,9 +284,8 @@ function createProgressCallback(
 /**
  * Heuristically calculates a power-of-two atlas texture size.
  *
- * @deprecated The generator uses the native `smart-size` + `pot` options from
- * msdf-bmfont-xml which produce better results. This helper is retained only
- * for external callers that may depend on it.
+ * @deprecated The generator uses msdfgen-wasm's internal smart-size + pot packing
+ * which produces better results. This helper is retained only for external callers.
  * @since 1.0.0
  * Will be removed in v2.0.0.
  */
