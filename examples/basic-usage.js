@@ -1,4 +1,4 @@
-import UniversalMSDFGenerator from '../src/index.js';
+import UniversalMSDFGenerator from '../dist/index.js';
 
 /**
  * Basic Usage Example
@@ -52,7 +52,7 @@ async function basicExample() {
 
     console.log('\n🎉 All examples completed successfully!');
     console.log('Check the "./examples/assets" directory to see the results.\n');
-  } catch (error: unknown) {
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('\n❌ Example failed:', message);
     process.exit(1);

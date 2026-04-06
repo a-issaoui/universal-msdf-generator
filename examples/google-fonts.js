@@ -1,4 +1,4 @@
-import { UniversalMSDFGenerator } from '../src/index.js';
+import { UniversalMSDFGenerator } from '../dist/index.js';
 
 async function googleFontsExample() {
   const generator = new UniversalMSDFGenerator({
@@ -37,7 +37,7 @@ async function googleFontsExample() {
     await generator.dispose();
 
     console.log('\n🎉 Google Fonts examples completed!');
-  } catch (error: unknown) {
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('❌ Example failed:', message);
     process.exit(1);

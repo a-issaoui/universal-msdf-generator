@@ -1,4 +1,4 @@
-import { generate } from '../src/index.js';
+import { generate } from '../dist/index.js';
 
 async function run() {
   console.log('--- DIAGNOSTIC RUN: ORBITRON ---');

@@ -1,4 +1,4 @@
-import { MSDFUtils, UniversalMSDFGenerator } from '../src/index.js';
+import { MSDFUtils, UniversalMSDFGenerator } from '../dist/index.js';
 
 async function advancedExample() {
   const generator = new UniversalMSDFGenerator({
@@ -48,7 +48,7 @@ async function advancedExample() {
     await generator.dispose();
 
     console.log('\n🎉 Advanced examples completed!');
-  } catch (error: unknown) {
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('❌ Example failed:', message);
     process.exit(1);
