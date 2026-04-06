@@ -22,6 +22,7 @@ export default defineConfig({
         'test/**',
         'vitest.config.ts',
         'tsup.config.ts',
+        'src/types.ts',
       ],
     },
   },

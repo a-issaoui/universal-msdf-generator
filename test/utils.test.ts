@@ -55,6 +55,16 @@ describe('MSDFUtils', () => {
       const custom = charsets.custom as (chars: string) => string[];
       expect(custom('abc')).toEqual(['a', 'b', 'c']);
     });
+
+    it('should resolve charsets correctly', () => {
+      // @ts-expect-error
+      const resolve = MSDFUtils.resolveCharset;
+      expect(resolve(undefined)).toBe(MSDFUtils.getAlphanumericCharset());
+      expect(resolve(['a', 'b'])).toBe('ab');
+      expect(resolve('ascii')).toBe(MSDFUtils.getASCIICharset());
+      expect(resolve('custom-raw')).toBe('custom-raw');
+      expect(resolve('custom')).toBe(''); // presets.custom('') => ''
+    });
   });
 
   describe('calculateOptimalTextureSize', () => {
@@ -68,6 +78,18 @@ describe('MSDFUtils', () => {
       const [w, h] = MSDFUtils.calculateOptimalTextureSize(10000, 200);
       expect(w).toBeLessThanOrEqual(4096);
       expect(h).toBeLessThanOrEqual(4096);
+    });
+
+    it('should handle small character counts', () => {
+      const [w, h] = MSDFUtils.calculateOptimalTextureSize(1, 48);
+      expect(w).toBe(64);
+      expect(h).toBe(64);
+    });
+
+    it('should handle moderate character counts', () => {
+      const [w, h] = MSDFUtils.calculateOptimalTextureSize(1000, 48);
+      expect(w).toBe(2048);
+      expect(h).toBe(2048);
     });
   });
 
@@ -104,6 +126,7 @@ describe('MSDFUtils', () => {
       fontName: 'TestFont',
       data: { pages: [], chars: [], info: {}, common: {} } as any,
       metadata: {} as any,
+      atlases: [],
     };
 
     beforeEach(() => {
@@ -144,6 +167,57 @@ describe('MSDFUtils', () => {
         expect.stringContaining(path.join(path.resolve('./out'), 'msdf-font.json')),
         expect.any(String),
       );
+    });
+
+    it('should write atlases/textures', async () => {
+      const resultWithAtlas: any = {
+        ...mockResult,
+        atlases: [{ filename: 'atlas.png', texture: Buffer.from('tex') }],
+      };
+      await MSDFUtils.saveMSDFOutput(resultWithAtlas, './out');
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.join(path.resolve('./out'), 'atlas.png')),
+        expect.any(Buffer),
+      );
+    });
+
+    it('should write XML when present', async () => {
+      const resultWithXml: any = {
+        ...mockResult,
+        xml: '<fnt></fnt>',
+      };
+      await MSDFUtils.saveMSDFOutput(resultWithXml, './out', { format: 'fnt' });
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.join(path.resolve('./out'), 'TestFont.fnt')),
+        '<fnt></fnt>',
+      );
+    });
+
+    it('should NOT write XML if missing from result despite format being fnt', async () => {
+      const resultNoXml: any = { success: true, fontName: 'Test', xml: undefined };
+      const paths = await MSDFUtils.saveMSDFOutput(resultNoXml, './out', { format: 'fnt' });
+      // It always writes metadata, so paths should contain only the metadata file
+      expect(paths).toHaveLength(1);
+      expect(paths[0]).toContain('Test-meta.json');
+      expect(fs.writeFile).not.toHaveBeenCalledWith(
+        expect.stringContaining('.fnt'),
+        expect.any(String),
+      );
+    });
+
+    it('should write XML for all relevant formats', async () => {
+      const resultWithXml: any = { success: true, fontName: 'T', xml: '<x></x>', metadata: {} };
+      await MSDFUtils.saveMSDFOutput(resultWithXml, './out', { format: 'both' });
+      await MSDFUtils.saveMSDFOutput(resultWithXml, './out', { format: 'all' });
+      // Verify XML was written at least once
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('.fnt'), '<x></x>');
+    });
+
+    it('should return empty array for failed or cached results', async () => {
+      expect(await MSDFUtils.saveMSDFOutput({ success: false } as any, './out')).toEqual([]);
+      expect(
+        await MSDFUtils.saveMSDFOutput({ success: true, cached: true } as any, './out'),
+      ).toEqual([]);
     });
   });
 

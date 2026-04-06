@@ -32,9 +32,18 @@ describe('FontFetcher', () => {
       expect(await (fetcher as any).detectSourceType('http://fonts.com/test.woff')).toBe('url');
     });
 
+    it('should detect URL object', async () => {
+      expect(await (fetcher as any).detectSourceType(new URL('https://ex.com'))).toBe('url');
+    });
+
     it('should detect local files', async () => {
       (fs.stat as any).mockResolvedValue({ isFile: () => true });
       expect(await (fetcher as any).detectSourceType('./font.ttf')).toBe('local');
+    });
+
+    it('should handle non-file local paths', async () => {
+      (fs.stat as any).mockResolvedValue({ isFile: () => false });
+      expect(await (fetcher as any).detectSourceType('./directory')).toBe('unknown');
     });
 
     it('should handle missing local files', async () => {
@@ -64,6 +73,12 @@ describe('FontFetcher', () => {
         .mockResolvedValue({ buffer: Buffer.alloc(0), name: 'test', source: 'url' });
       await fetcher.fetch('https://example.com/font.ttf');
       expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should support URL object in main fetch', async () => {
+      const spy = vi.spyOn(fetcher, 'fetchFromUrl').mockResolvedValue({} as any);
+      await fetcher.fetch(new URL('https://example.com/font.ttf'));
+      expect(spy).toHaveBeenCalled();
     });
 
     it('should route to fetchLocalFile', async () => {
@@ -106,7 +121,6 @@ describe('FontFetcher', () => {
       const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
       (global.fetch as any)
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
-
         .mockResolvedValueOnce({
           ok: true,
           arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
@@ -116,6 +130,18 @@ describe('FontFetcher', () => {
       expect(result.name).toBe('Roboto');
       expect(result.source).toBe('google');
       expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('should use style="italic" correctly', async () => {
+      const mockCss = '@font-face { src: url("t.woff2") }';
+      (global.fetch as any)
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        });
+      const result = await fetcher.fetchGoogleFont('Roboto', { style: 'italic' });
+      expect(result.style).toBe('italic');
     });
 
     it('should throw if font URL cannot be extracted', async () => {
@@ -138,11 +164,81 @@ describe('FontFetcher', () => {
       await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('google-string-fail');
     });
 
+    it('should return null if no font URLs can be parsed from CSS', () => {
+      const result = (fetcher as any).extractLatinFontUrl('@font-face { color: red; }', 'any');
+      expect(result).toBeNull();
+    });
+
+    it('should return null if CSS contains no @font-face blocks', () => {
+      const result = (fetcher as any).extractLatinFontUrl('void', 'any');
+      expect(result).toBeNull();
+    });
+
+    it('should throw if font download fails with HTTP error', async () => {
+      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
+      (global.fetch as any)
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+        });
+
+      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('HTTP 500');
+    });
+
+    it('should parse complex Unicode ranges correctly', async () => {
+      const mockCss = `
+        @font-face {
+          src: url("https://fonts.gstatic.com/cyrillic.woff2");
+          unicode-range: U+0400-045F;
+        }
+        @font-face {
+          src: url("https://fonts.gstatic.com/latin.woff2");
+          unicode-range: U+0000-00FF, U+0131, U+0152-0153;
+        }
+        @font-face {
+          src: url("https://fonts.gstatic.com/single.woff2");
+          unicode-range: U+0041;
+        }
+      `;
+      (global.fetch as any)
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        });
+
+      const result = await fetcher.fetchGoogleFont('Roboto');
+      expect(result.source).toBe('google');
+      // Should have picked the single U+0041 block
+    });
+
+    it('should test single non-latin unicode segment', async () => {
+      const mockCss = '@font-face { src: url("t.woff2"); unicode-range: U+0042; }';
+      (global.fetch as any)
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        });
+      await fetcher.fetchGoogleFont('Roboto');
+    });
+
+    it('should handle invalid unicode segments gracefully', async () => {
+      const mockCss = '@font-face { src: url("t.woff2"); unicode-range: INVALID; }';
+      (global.fetch as any)
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        });
+      await fetcher.fetchGoogleFont('Roboto');
+    });
+
     it('should support "any" format in fetchGoogleFont', async () => {
       const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.ttf") }';
       (global.fetch as any)
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
-
         .mockResolvedValueOnce({
           ok: true,
           arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
@@ -166,6 +262,15 @@ describe('FontFetcher', () => {
       expect(result.source).toBe('url');
     });
 
+    it('should support URL object as input in fetchFromUrl', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+      });
+      const result = await fetcher.fetchFromUrl(new URL('https://example.com/MyFont.ttf'));
+      expect(result.originalUrl).toBe('https://example.com/MyFont.ttf');
+    });
+
     it('should respect explicit name in fetchFromUrl', async () => {
       (global.fetch as any).mockResolvedValue({
         ok: true,
@@ -180,7 +285,6 @@ describe('FontFetcher', () => {
         ok: true,
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
       });
-      // Mock extractFontNameFromUrl to return empty
       vi.spyOn(fetcher as any, 'extractFontNameFromUrl').mockReturnValue('');
       const result = await fetcher.fetchFromUrl('https://example.com/Font.ttf');
       expect(result.name).toBe('unknown-font');

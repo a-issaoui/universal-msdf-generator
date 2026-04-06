@@ -43,9 +43,16 @@ describe('UniversalMSDFGenerator', () => {
       expect(generator.converter).toBeDefined();
     });
 
+    it('should handle initialization failure correctly', async () => {
+      const genFail = new UniversalMSDFGenerator();
+      // Directly set a rejected promise to simulate failure during the async init block
+      (genFail as any).initPromise = Promise.reject(new Error('Import failed'));
+      await expect(genFail.generate('TestFont')).rejects.toThrow('Import failed');
+    });
+
     it('should use default options if none provided', () => {
       const genDefault = new UniversalMSDFGenerator();
-      expect((genDefault as any).defaultOptions.verbose).not.toBe(false); // defaults to undefined in storage but true in merge
+      expect((genDefault as any).defaultOptions.verbose).not.toBe(false);
     });
   });
 
@@ -85,7 +92,7 @@ describe('UniversalMSDFGenerator', () => {
 
       await generator.generate('Font', { verbose: true, outputDir: './out' });
 
-      expect(spy).toHaveBeenCalled(); // Fetching log
+      expect(spy).toHaveBeenCalled();
       expect(spy).toHaveBeenCalledWith(expect.stringContaining('Saving outputs to'));
 
       spy.mockRestore();
@@ -101,29 +108,30 @@ describe('UniversalMSDFGenerator', () => {
       }
     });
 
-    it('should not double-prefix error messages', async () => {
+    it('should generate XML when output format is "fnt"', async () => {
       await generator.ensureInitialized();
-      vi.spyOn(generator.fetcher, 'fetch').mockRejectedValue(
-        new Error('MSDF generation failed: Already prefixed'),
-      );
-      const result = await generator.generate('FailFont');
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toBe('MSDF generation failed: Already prefixed');
-      }
-    });
+      const mockFontData = { buffer: Buffer.from('f'), name: 'Test', source: 'buffer' };
+      const mockResult = {
+        success: true,
+        fontName: 'Test',
+        data: {
+          info: {},
+          common: {},
+          chars: [],
+          pages: [],
+          kernings: [],
+          distanceField: {},
+        },
+        metadata: {},
+        atlases: [],
+      };
 
-    it('should handle non-Error catch in generate', async () => {
-      await generator.ensureInitialized();
-      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.spyOn(generator.fetcher, 'fetch').mockRejectedValue('raw-string-fail');
-      const result = await generator.generate('FailFont', { verbose: true });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error).toBe('MSDF generation failed: raw-string-fail');
-      }
-      expect(spy).toHaveBeenCalled();
-      spy.mockRestore();
+      vi.spyOn(generator.fetcher, 'fetch').mockResolvedValue(mockFontData as any);
+      vi.spyOn(generator.converter, 'convert').mockResolvedValue(mockResult as any);
+
+      const result = await generator.generate('Font', { outputFormat: 'fnt' });
+      expect(result.success).toBe(true);
+      expect(result.xml).toBeDefined();
     });
   });
 
@@ -193,7 +201,6 @@ describe('UniversalMSDFGenerator', () => {
       const spyError = vi.spyOn(console, 'error').mockImplementation(() => {});
       const generatorVerbose = new UniversalMSDFGenerator({ verbose: true });
 
-      // Inject an error by mocking the internal generate call to REJECT
       vi.spyOn(generatorVerbose, 'generate').mockRejectedValue('verbose-raw-fail');
 
       await generatorVerbose.generateMultiple(['Font1']);
@@ -203,22 +210,6 @@ describe('UniversalMSDFGenerator', () => {
       );
 
       spyError.mockRestore();
-    });
-
-    it('should use "buffer" as label for non-string sources in verbose mode', async () => {
-      await generator.ensureInitialized();
-      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      vi.spyOn(generator.fetcher, 'fetch').mockResolvedValue({
-        buffer: Buffer.from('f'),
-        name: 'T',
-      } as any);
-      vi.spyOn(generator.converter, 'convert').mockResolvedValue({ success: true } as any);
-
-      const generatorVerbose = new UniversalMSDFGenerator({ verbose: true });
-      await generatorVerbose.generateMultiple([Buffer.from('f')]);
-
-      expect(spy).toHaveBeenCalledWith(expect.stringContaining('Processing font 1/1: buffer'));
-      spy.mockRestore();
     });
   });
 
@@ -295,15 +286,6 @@ describe('UniversalMSDFGenerator', () => {
       expect(convertSpy).toHaveBeenCalled();
     });
 
-    it('should use "font" as label for non-string sources in checkCache', async () => {
-      vi.spyOn(MSDFUtils, 'checkMSDFOutputExists').mockResolvedValue(true);
-      const result = await generator.generate(Buffer.from('f'), {
-        reuseExisting: true,
-        outputDir: './output',
-      });
-      expect(result.fontName).toBe('font-400-normal-48-r4');
-    });
-
     it('should not log re-use message if verbose is false', async () => {
       vi.spyOn(MSDFUtils, 'checkMSDFOutputExists').mockResolvedValue(true);
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -314,6 +296,86 @@ describe('UniversalMSDFGenerator', () => {
       });
       expect(logSpy).not.toHaveBeenCalled();
       logSpy.mockRestore();
+    });
+
+    it('should NOT prefix error message if already prefixed', async () => {
+      // @ts-expect-error
+      const result = generator.buildFailure('MSDF generation failed: Already prefixed', 'Test');
+      expect(result.error).toBe('MSDF generation failed: Already prefixed');
+    });
+
+    it('should handle boolean and null as error objects', () => {
+      // @ts-expect-error
+      expect(generator.buildFailure(null, 'T').error).toContain('null');
+      // @ts-expect-error
+      expect(generator.buildFailure(false, 'T').error).toContain('false');
+    });
+
+    it('should use deterministic identity for buffers', () => {
+      // @ts-expect-error
+      const id = generator.getIdentity(Buffer.alloc(0), {});
+      expect(id).toContain('font');
+    });
+
+    it('should cover generateMultiple top-level export with default options', async () => {
+      // @ts-expect-error
+      const results = await generateMultiple(['Roboto']);
+      expect(results).toHaveLength(1);
+    });
+
+    it('should handle empty source identity', () => {
+      // @ts-expect-error
+      const id = generator.getIdentity('', {});
+      expect(id).toContain('font');
+    });
+
+    it('should log error in generateMultiple if verbose is true', async () => {
+      const genV = new UniversalMSDFGenerator({ verbose: true });
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Force a failure
+      (genV as any).generate = vi.fn().mockRejectedValue('fail');
+      await genV.generateMultiple(['Roboto'], { verbose: true });
+      expect(spy).toHaveBeenCalled();
+
+      // Cover the false branch
+      await genV.generateMultiple(['Roboto'], { verbose: false });
+
+      spy.mockRestore();
+    });
+
+    it('should handle string source without slash or dot in identity', () => {
+      // @ts-expect-error
+      const id = generator.getIdentity('NoSlashNoDot', {});
+      expect(id).toContain('noslashnodot');
+
+      // Cover the no-slash but with-dot case
+      // @ts-expect-error
+      const id2 = generator.getIdentity('font.ttf', {});
+      expect(id2).toContain('font');
+
+      // Cover the case where source is a buffer to hit the false branch of the ternary
+      // @ts-expect-error
+      const id3 = generator.getIdentity(Buffer.alloc(0), {});
+      expect(id3).toBe('font-400-normal-48-r4');
+    });
+
+    it('should cover generateMultiple with buffer sources and dual error branches', async () => {
+      const gen = new UniversalMSDFGenerator({ verbose: true });
+      const spyE = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const spyL = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      // Hit 'buffer' label and Error branch
+      (gen as any).generate = vi.fn().mockRejectedValue(new Error('err1'));
+      await gen.generateMultiple([Buffer.alloc(0)], { verbose: true });
+      expect(spyE).toHaveBeenCalledWith(expect.stringContaining('err1'));
+
+      // Hit non-Error branch
+      (gen as any).generate = vi.fn().mockRejectedValue('err2');
+      await gen.generateMultiple([Buffer.alloc(0)], { verbose: true });
+      expect(spyE).toHaveBeenCalledWith(expect.stringContaining('err2'));
+
+      spyE.mockRestore();
+      spyL.mockRestore();
     });
   });
 });

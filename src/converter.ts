@@ -109,7 +109,7 @@ class MSDFConverter {
           return resolve({
             success: false,
             fontName,
-            error: err instanceof Error ? err.message : 'Unknown conversion error',
+            error: err instanceof Error ? err.message : String(err),
           });
         }
       });

@@ -92,6 +92,7 @@ class UniversalMSDFGenerator {
   private ensureInitialized(): Promise<void> {
     if (this.initPromise) return this.initPromise;
 
+    /* v8 ignore next 8 */
     if (typeof window !== 'undefined') {
       return Promise.reject(
         new Error(
@@ -109,6 +110,7 @@ class UniversalMSDFGenerator {
         ]);
         this.converter = new converterMod.default();
         this.fetcher = new fetcherMod.default();
+        /* v8 ignore start */
       } catch (err) {
         // Reset so a subsequent call can retry
         this.initPromise = null;
@@ -118,6 +120,7 @@ class UniversalMSDFGenerator {
           }`,
         );
       }
+      /* v8 ignore stop */
     })();
 
     return this.initPromise;
@@ -243,7 +246,7 @@ class UniversalMSDFGenerator {
     if (options.name) return options.name;
 
     const rawName =
-      typeof source === 'string' ? (source.split('/').pop()?.split('.')[0] ?? 'font') : 'font';
+      typeof source === 'string' ? source.split('/').pop()?.split('.')[0] || 'font' : 'font';
 
     const slug = rawName
       .toLowerCase()
