@@ -1,5 +1,5 @@
 import generateBmFont from 'msdf-bmfont-xml';
-import type { GenerateOptions, MSDFLayout, MSDFResult, MSDFSuccess } from './types.js';
+import type { GenerateOptions, MSDFFailure, MSDFLayout, MSDFSuccess } from './types.js';
 
 /**
  * Generates an atlas filename based on texture count.
@@ -36,7 +36,7 @@ class MSDFConverter {
     fontBuffer: Buffer,
     fontName: string,
     options: GenerateOptions = {},
-  ): Promise<MSDFResult> {
+  ): Promise<MSDFSuccess | MSDFFailure> {
     const charset = options.charset || this.options.charset;
     const fontSize = options.fontSize || this.options.fontSize;
     const textureSize = options.textureSize || this.options.textureSize;
@@ -65,7 +65,7 @@ class MSDFConverter {
 
       generateBmFont(fontBuffer, config, (error, textures, fontResult) => {
         if (error) {
-          return resolve(this.handleGenError(error, fontName));
+          return resolve(this.handleGenError(error, fontName) as MSDFFailure);
         }
 
         try {
@@ -88,13 +88,13 @@ class MSDFConverter {
             ),
           );
         } catch (err) {
-          resolve(this.handleGenError(err, fontName));
+          resolve(this.handleGenError(err, fontName) as MSDFFailure);
         }
       });
     });
   }
 
-  private handleGenError(err: unknown, fontName: string): MSDFResult {
+  private handleGenError(err: unknown, fontName: string): MSDFFailure {
     const isErr = err instanceof Error;
     const message = isErr ? (err as Error).message : String(err);
     const hasP = message.startsWith('msdf-bmfont-xml failed:');
@@ -132,8 +132,8 @@ class MSDFConverter {
   async convertMultiple(
     fonts: Array<{ buffer: Buffer; name: string }>,
     options: GenerateOptions = {},
-  ): Promise<MSDFResult[]> {
-    const results: MSDFResult[] = [];
+  ): Promise<Array<MSDFSuccess | MSDFFailure>> {
+    const results: Array<MSDFSuccess | MSDFFailure> = [];
     const total = fonts.length;
     for (let i = 0; i < total; i++) {
       try {
