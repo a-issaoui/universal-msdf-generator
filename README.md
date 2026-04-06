@@ -81,6 +81,9 @@ npx universal-msdf "Roboto" --force --format both --weight 700
 | `--name`, `-n` | Override output filename stem | derived |
 | `--edge-coloring` | Edge algorithm: `simple` \| `inktrap` \| `distance` | `simple` |
 | `--padding` | Glyph padding in atlas (px) | `2` |
+| `--fix-overlaps` | Pre-process glyph paths to fix overlapping contours | `true` |
+| `--no-fix-overlaps` | Disable overlap fixing | — |
+| `--timeout` | Max ms to wait for generation before failing | `60000` |
 | `--concurrency` | Max parallel fonts in batch mode | unlimited |
 | `--reuse` | Skip generation if output files exist | `true` |
 | `--no-reuse` | Always re-generate | — |

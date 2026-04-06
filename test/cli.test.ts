@@ -160,6 +160,21 @@ describe('CLI', () => {
       expect(options.reuseExisting).toBe(false);
     });
 
+    it('--fix-overlaps sets fixOverlaps: true', () => {
+      const { options } = parseArgs(['Roboto', '--no-fix-overlaps', '--fix-overlaps']);
+      expect(options.fixOverlaps).toBe(true);
+    });
+
+    it('--no-fix-overlaps sets fixOverlaps: false', () => {
+      const { options } = parseArgs(['Roboto', '--no-fix-overlaps']);
+      expect(options.fixOverlaps).toBe(false);
+    });
+
+    it('--timeout sets generationTimeout', () => {
+      const { options } = parseArgs(['Roboto', '--timeout', '30000']);
+      expect(options.generationTimeout).toBe(30000);
+    });
+
     it('collects multiple sources', () => {
       const { sources } = parseArgs(['Roboto', 'Lato', '"Open Sans"']);
       expect(sources).toEqual(['Roboto', 'Lato', '"Open Sans"']);
@@ -196,6 +211,13 @@ describe('CLI', () => {
 
     it('exits 1 for non-positive --concurrency', () => {
       expect(() => parseArgs(['Roboto', '--concurrency', '0'])).toThrow('process.exit(1)');
+    });
+
+    it('exits 1 for non-positive --timeout', () => {
+      expect(() => parseArgs(['Roboto', '--timeout', '0'])).toThrow('process.exit(1)');
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('--timeout must be a positive number'),
+      );
     });
 
     it('exits 1 for unknown flag', () => {

@@ -27,6 +27,9 @@ function showHelp() {
     --name, -n         Override output filename stem
     --edge-coloring    Edge coloring algorithm: simple | inktrap | distance (default: simple)
     --padding          Glyph padding in atlas in px (default: 2)
+    --fix-overlaps     Pre-process glyph paths to fix overlapping contours (default: true)
+    --no-fix-overlaps  Disable overlap fixing
+    --timeout          Max ms to wait for generation before failing (default: 60000)
     --concurrency      Max parallel fonts in batch mode (default: unlimited)
     --reuse            Skip if output already exists (default: true)
     --no-reuse         Always re-generate, do not skip existing files
@@ -55,6 +58,8 @@ interface CliOptions {
   name: string | undefined;
   edgeColoring: 'simple' | 'inktrap' | 'distance';
   padding: number;
+  fixOverlaps: boolean;
+  generationTimeout: number | undefined;
   concurrency: number | undefined;
   reuseExisting: boolean;
   force: boolean;
@@ -74,6 +79,8 @@ export function parseArgs(args: string[]): { sources: string[]; options: CliOpti
     name: undefined,
     edgeColoring: 'simple',
     padding: 2,
+    fixOverlaps: true,
+    generationTimeout: undefined,
     concurrency: undefined,
     reuseExisting: true,
     force: false,
@@ -164,6 +171,24 @@ export function parseArgs(args: string[]): { sources: string[]; options: CliOpti
           process.exit(1);
         }
         options.padding = val;
+        break;
+      }
+
+      case '--fix-overlaps':
+        options.fixOverlaps = true;
+        break;
+
+      case '--no-fix-overlaps':
+        options.fixOverlaps = false;
+        break;
+
+      case '--timeout': {
+        const val = parseInt(args[++i], 10);
+        if (Number.isNaN(val) || val < 1) {
+          console.error(`💥 Error: --timeout must be a positive number (got "${args[i]}")`);
+          process.exit(1);
+        }
+        options.generationTimeout = val;
         break;
       }
 
