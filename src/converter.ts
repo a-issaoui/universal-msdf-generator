@@ -1,17 +1,23 @@
 import generateBmFont from 'msdf-bmfont-xml';
-import type { GenerateOptions, MSDFLayout, MSDFResult } from './types.js';
+import type { GenerateOptions, MSDFLayout, MSDFResult, MSDFSuccess } from './types.js';
+
+/**
+ * Generates an atlas filename based on texture count.
+ */
+function generateAtlasName(fontName: string, index: number, count: number): string {
+  const isMulti = count > 1;
+  if (isMulti) {
+    return `${fontName}-${index}.png`;
+  }
+  return `${fontName}.png`;
+}
 
 /**
  * Core MSDF generation engine.
- * Wraps the native `msdf-bmfont-xml` package to provide a modern, Promise-based API for Node.js.
  */
 class MSDFConverter {
   private options: GenerateOptions;
 
-  /**
-   * Initializes a new converter instance.
-   * @param options - Default configuration for conversion tasks.
-   */
   constructor(options: GenerateOptions = {}) {
     this.options = {
       charset: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
@@ -22,51 +28,35 @@ class MSDFConverter {
     };
   }
 
-  /**
-   * Performs pre-conversion initialization logic.
-   * Currently a no-op for the native engine.
-   */
   async initialize(): Promise<void> {
-    return Promise.resolve();
+    // No-op for current engine
   }
 
-  /**
-   * Converts a raw font buffer into a Multi-channel Signed Distance Field atlas.
-   *
-   * @param fontBuffer - The binary content of the font file.
-   * @param fontName   - Friendly name of the font, used as the base filename for atlas pages.
-   * @param options    - Per-call overrides merged over the constructor defaults.
-   * @returns A promise resolving to the complete MSDF generation result.
-   *
-   * Design notes:
-   *  - `pages[]` in the returned MSDFLayout holds filename strings (e.g. "font.png"),
-   *    NOT base64 data URIs. Callers that need to write PNGs use `result.textures[]`.
-   *  - The `distanceField` object carries both the BMFont-spec keys (fieldType /
-   *    distanceRange) AND the PixiJS v8 aliases (type / range) so one JSON satisfies both.
-   */
   async convert(
     fontBuffer: Buffer,
     fontName: string,
     options: GenerateOptions = {},
   ): Promise<MSDFResult> {
-    const charset = options.charset ?? (this.options.charset as string);
-    const fontSize = options.fontSize ?? this.options.fontSize;
-    const textureSize = options.textureSize ?? this.options.textureSize;
-    const fieldRange = options.fieldRange ?? this.options.fieldRange ?? 4;
+    const charset = options.charset || this.options.charset;
+    const fontSize = options.fontSize || this.options.fontSize;
+    const textureSize = options.textureSize || this.options.textureSize;
+    const fieldRange = options.fieldRange || this.options.fieldRange;
 
-    options.onProgress?.(0, 0, 1);
+    const hasProgress = !!options.onProgress;
+    if (hasProgress) {
+      options.onProgress?.(0, 0, 1);
+    }
 
     return new Promise((resolve) => {
-      // ...
       const config = {
         outputType: 'json' as const,
         filename: fontName,
         fontName,
-        fontSize,
-        charset: Array.isArray(charset) ? charset.join('') : charset,
-        distanceRange: fieldRange,
+        fontSize: fontSize as number,
+        charset: (Array.isArray(charset) ? charset.join('') : charset) as string,
+        distanceRange: fieldRange as number,
         fieldType: 'msdf' as const,
-        textureSize: (textureSize ?? [1024, 1024]) as [number, number],
+        textureSize: textureSize as [number, number],
         'smart-size': true,
         pot: true,
         rgba: true,
@@ -75,61 +65,80 @@ class MSDFConverter {
 
       generateBmFont(fontBuffer, config, (error, textures, fontResult) => {
         if (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return resolve({
-            success: false,
-            fontName,
-            error: `msdf-bmfont-xml failed: ${message}`,
-          });
+          return resolve(this.handleGenError(error, fontName));
         }
 
         try {
           const fontObj = this.parseFontDescriptor(fontResult);
-          const resultData = this.buildLayout(fontObj, textures, fontName, fieldRange);
+          const resultData = this.buildLayout(fontObj, textures, fontName, fieldRange as number);
 
-          options.onProgress?.(100, 1, 1);
+          if (hasProgress) {
+            options.onProgress?.(100, 1, 1);
+          }
 
-          resolve({
-            success: true,
-            fontName,
-            data: resultData,
-            atlases: textures.map((t, i) => ({
-              filename: textures.length > 1 ? `${fontName}-${i}.png` : `${fontName}.png`,
-              texture: t.texture,
-            })),
-            metadata: this.buildMetadata(
-              charset,
-              fontSize,
-              textureSize,
-              textures.length,
-              fieldRange,
+          resolve(
+            this.assembleSuccess(
+              fontName,
+              resultData,
+              textures,
+              charset as string,
+              fontSize as number,
+              textureSize as [number, number],
+              fieldRange as number,
             ),
-          });
+          );
         } catch (err) {
-          return resolve({
-            success: false,
-            fontName,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          resolve(this.handleGenError(err, fontName));
         }
       });
     });
   }
 
-  /**
-   * Batch-processes multiple fonts.
-   * Unlike convert(), this method aggregates errors into the results array rather than throwing.
-   */
+  private handleGenError(err: unknown, fontName: string): MSDFResult {
+    const isErr = err instanceof Error;
+    const message = isErr ? (err as Error).message : String(err);
+    const hasP = message.startsWith('msdf-bmfont-xml failed:');
+    let prefix = 'msdf-bmfont-xml failed: ';
+    if (hasP) {
+      prefix = '';
+    }
+    return {
+      success: false,
+      fontName,
+      error: `${prefix}${message}`,
+    };
+  }
+
+  private assembleSuccess(
+    fontName: string,
+    data: MSDFLayout,
+    textures: Array<{ filename: string; texture: Buffer }>,
+    charset: string | string[],
+    fontSize: number,
+    textureSize: [number, number],
+    fieldRange: number,
+  ): MSDFSuccess {
+    return {
+      success: true,
+      fontName,
+      data,
+      atlases: textures.map((t, i) => {
+        return { filename: generateAtlasName(fontName, i, textures.length), texture: t.texture };
+      }),
+      metadata: this.buildMetadata(charset, fontSize, textureSize, textures.length, fieldRange),
+    };
+  }
+
   async convertMultiple(
     fonts: Array<{ buffer: Buffer; name: string }>,
     options: GenerateOptions = {},
   ): Promise<MSDFResult[]> {
     const results: MSDFResult[] = [];
     const total = fonts.length;
-
     for (let i = 0; i < total; i++) {
       try {
-        const result = await this.convert(fonts[i].buffer, fonts[i].name, {
+        const font = fonts[i];
+        const result = await this.convert(font.buffer, font.name, {
           ...options,
           onProgress: (p) => {
             const overall = ((i + p / 100) / total) * 100;
@@ -138,66 +147,57 @@ class MSDFConverter {
         });
         results.push(result);
       } catch (err) {
-        results.push({
-          success: false,
-          fontName: fonts[i].name,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        results.push(this.handleGenError(err, fonts[i].name));
       }
     }
-
     return results;
   }
 
-  /**
-   * Parses the raw font descriptor returned by msdf-bmfont-xml.
-   */
   private parseFontDescriptor(fontResult: unknown): Record<string, unknown> {
-    try {
-      if (typeof fontResult === 'string') {
-        return JSON.parse(fontResult) as Record<string, unknown>;
+    const isString = typeof fontResult === 'string';
+    if (isString) {
+      try {
+        return JSON.parse(fontResult as string);
+      } catch (_err) {
+        throw new Error('msdf-bmfont-xml returned unparseable font descriptor');
       }
-      if (typeof fontResult === 'object' && fontResult !== null) {
-        // Handle wrapped { data: '...' } or direct object
-        const maybeData = (fontResult as { data?: unknown }).data;
-        if (maybeData) {
-          return typeof maybeData === 'string'
-            ? (JSON.parse(maybeData) as Record<string, unknown>)
-            : (maybeData as Record<string, unknown>);
-        }
-        return fontResult as Record<string, unknown>;
-      }
-      throw new Error('Unsupported font descriptor format');
-    } catch (err) {
-      if (err instanceof Error && err.message === 'Unsupported font descriptor format') {
-        throw err;
-      }
-      throw new Error('msdf-bmfont-xml returned unparseable font descriptor');
     }
+
+    const isObj = !!(fontResult && typeof fontResult === 'object');
+    if (isObj) {
+      const maybeData = (fontResult as { data?: unknown }).data;
+      if (maybeData) {
+        const isDataStr = typeof maybeData === 'string';
+        return isDataStr ? JSON.parse(maybeData as string) : (maybeData as Record<string, unknown>);
+      }
+      return fontResult as Record<string, unknown>;
+    }
+
+    throw new Error('Unsupported font descriptor format');
   }
 
-  /**
-   * Maps the raw BMFont data to a compliant MSDF layout descriptor.
-   */
   private buildLayout(
     fontObj: Record<string, unknown>,
     textures: Array<{ filename: string; texture: Buffer }>,
     _fontName: string,
     fieldRange: number,
   ): MSDFLayout {
-    const pageFilenames = textures.map((_, i) =>
-      textures.length > 1 ? `${_fontName}-${i}.png` : `${_fontName}.png`,
-    );
+    const pages = textures.map((_, i) => {
+      return generateAtlasName(_fontName, i, textures.length);
+    });
+
+    const info = fontObj.info as MSDFLayout['info'];
+    const common = fontObj.common as MSDFLayout['common'];
+    const chars = fontObj.chars as MSDFLayout['chars'];
+    const kerns = fontObj.kernings as MSDFLayout['kernings'];
+    const altKerns = fontObj.kerning as MSDFLayout['kernings'];
 
     return {
-      info: (fontObj.info as MSDFLayout['info']) ?? ({} as MSDFLayout['info']),
-      common: (fontObj.common as MSDFLayout['common']) ?? ({} as MSDFLayout['common']),
-      chars: (fontObj.chars as MSDFLayout['chars']) ?? [],
-      kernings:
-        (fontObj.kernings as MSDFLayout['kernings']) ??
-        (fontObj.kerning as MSDFLayout['kernings']) ??
-        [],
-      pages: pageFilenames,
+      info: info ? info : ({} as MSDFLayout['info']),
+      common: common ? common : ({} as MSDFLayout['common']),
+      chars: chars ? chars : [],
+      kernings: kerns ? kerns : altKerns ? altKerns : [],
+      pages,
 
       distanceField: {
         fieldType: 'msdf',
@@ -208,20 +208,20 @@ class MSDFConverter {
     };
   }
 
-  /**
-   * Builds metadata for the generation task.
-   */
   private buildMetadata(
     charset: string | string[],
-    fontSize: number | undefined,
-    textureSize: [number, number] | null | undefined,
+    fontSize: number,
+    textureSize: [number, number],
     atlasCount: number,
     fieldRange: number,
   ) {
+    const isArr = Array.isArray(charset);
+    const charsetLen = isArr ? (charset as string[]).join('').length : (charset as string).length;
+
     return {
-      charset: (Array.isArray(charset) ? charset.join('') : charset).length,
-      fontSize: fontSize ?? 48,
-      textureSize: (textureSize ?? [1024, 1024]) as [number, number],
+      charset: charsetLen,
+      fontSize,
+      textureSize,
       atlasCount,
       fieldRange,
       generatedAt: new Date().toISOString(),
@@ -229,11 +229,8 @@ class MSDFConverter {
     };
   }
 
-  /**
-   * Releases resources allocated to the converter.
-   */
   async dispose(): Promise<void> {
-    return Promise.resolve();
+    // No-op
   }
 }
 

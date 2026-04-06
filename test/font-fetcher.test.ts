@@ -247,6 +247,13 @@ describe('FontFetcher', () => {
       const result = await fetcher.fetchGoogleFont('Roboto', { format: 'any' });
       expect(result.format).toBe('any');
     });
+
+    it('should fall back to raw parsed blocks if preferred format is missing', () => {
+      // Mocking extractLatinFontUrl with a mismatching format
+      const mockCss = '@font-face { src: url("test.ttf") }';
+      const result = (fetcher as any).extractLatinFontUrl(mockCss, 'woff2');
+      expect(result).toBe('test.ttf');
+    });
   });
 
   describe('fetchFromUrl', () => {
