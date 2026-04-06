@@ -24,6 +24,7 @@ export default defineConfig({
         'tsup.config.ts',
         'src/types.ts',
         'src/cli.ts',
+        'scripts/**',
       ],
     },
   },

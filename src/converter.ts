@@ -1,22 +1,139 @@
-import generateBmFont from 'msdf-bmfont-xml';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import type { FontMetrics, PackedGlyphsBin } from 'msdfgen-wasm';
+import { Msdfgen } from 'msdfgen-wasm';
 import type { GenerateOptions, MSDFFailure, MSDFLayout, MSDFSuccess } from './types.js';
+import { resolveCharset } from './utils.js';
 
 /**
  * Generates an atlas filename based on texture count.
  */
 function generateAtlasName(fontName: string, index: number, count: number): string {
-  const isMulti = count > 1;
-  if (isMulti) {
-    return `${fontName}-${index}.png`;
-  }
-  return `${fontName}.png`;
+  return count > 1 ? `${fontName}-${index}.png` : `${fontName}.png`;
 }
 
 /**
- * Core MSDF generation engine.
+ * Runs a promise with a hard timeout. Rejects with a timeout error if ms elapses.
+ */
+function withTimeout<T>(ms: number, label: string, fn: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`msdfgen-wasm timed out after ${ms}ms for "${label}"`)),
+      ms,
+    );
+    fn().then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      /* v8 ignore next 4 — fn() always resolves (try-catch inside); reject path unreachable */
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Builds an MSDFLayout from packed glyph bins and font metrics.
+ */
+function buildLayout(
+  fontName: string,
+  bins: PackedGlyphsBin[],
+  metrics: FontMetrics,
+  atlases: Array<{ filename: string; texture: Buffer }>,
+  fontSize: number,
+  fieldRange: number,
+): MSDFLayout {
+  // round: convert normalized em units → pixels (2 decimal precision)
+  const round = (x: number) => Math.round(x * 100 * fontSize) / 100;
+
+  const chars: MSDFLayout['chars'] = [];
+  const kernings: MSDFLayout['kernings'] = [];
+
+  for (let pageIdx = 0; pageIdx < bins.length; pageIdx++) {
+    const bin = bins[pageIdx];
+    for (const rect of bin.rects) {
+      const glyph = rect.glyph;
+      const range = rect.msdfData.range; // already in em units (range_px / fontSize)
+      const hasSize = rect.width > 0 && rect.height > 0;
+
+      chars.push({
+        id: glyph.unicode,
+        index: glyph.index,
+        char: String.fromCodePoint(glyph.unicode),
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        xoffset: hasSize ? round(glyph.left - range / 2) : 0,
+        yoffset: hasSize ? round(metrics.ascenderY - (glyph.top + range / 2)) : 0,
+        xadvance: round(glyph.advance),
+        page: pageIdx,
+        chnl: 15,
+      });
+
+      for (const [otherGlyph, amount] of glyph.kerning) {
+        kernings.push({
+          first: glyph.unicode,
+          second: otherGlyph.unicode,
+          amount: round(amount),
+        });
+      }
+    }
+  }
+
+  // Atlas dimensions from first bin; all bins share the same maxWidth/maxHeight constraint
+  const atlasW = bins.length > 0 ? bins[0].width : 0;
+  const atlasH = bins.length > 0 ? bins[0].height : 0;
+
+  return {
+    pages: atlases.map((a) => a.filename),
+    chars,
+    info: {
+      face: fontName,
+      size: fontSize,
+      bold: 0,
+      italic: 0,
+      charset: chars.map((c) => c.char),
+      unicode: 1,
+      stretchH: 100,
+      smooth: 1,
+      aa: 1,
+      padding: [0, 0, 0, 0],
+      spacing: [0, 0],
+      outline: 0,
+    },
+    common: {
+      lineHeight: round(metrics.lineHeight),
+      base: round(metrics.ascenderY),
+      scaleW: atlasW,
+      scaleH: atlasH,
+      pages: atlases.length,
+      packed: 0,
+      alphaChnl: 0,
+      redChnl: 0,
+      greenChnl: 0,
+      blueChnl: 0,
+    },
+    distanceField: {
+      fieldType: 'msdf',
+      distanceRange: fieldRange,
+      type: 'msdf',
+      range: fieldRange,
+    },
+    kernings,
+  };
+}
+
+/**
+ * Core MSDF generation engine backed by msdfgen-wasm.
  */
 class MSDFConverter {
   private options: GenerateOptions;
+  private gen: Msdfgen | null = null;
+  private initPromise: Promise<void> | null = null;
 
   constructor(options: GenerateOptions = {}) {
     this.options = {
@@ -29,7 +146,19 @@ class MSDFConverter {
   }
 
   async initialize(): Promise<void> {
-    // No-op for current engine
+    if (!this.initPromise) {
+      this.initPromise = this._doInitialize();
+    }
+    await this.initPromise;
+  }
+
+  private async _doInitialize(): Promise<void> {
+    const require = createRequire(import.meta.url);
+    const wasmPath = require.resolve('msdfgen-wasm/wasm');
+    const buf = readFileSync(wasmPath);
+    // Ensure we have a standalone ArrayBuffer (Buffer may share its underlying buffer)
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    this.gen = await Msdfgen.create(ab);
   }
 
   async convert(
@@ -49,91 +178,94 @@ class MSDFConverter {
       options.onProgress?.(0, 0, 1);
     }
 
-    return new Promise<MSDFSuccess | MSDFFailure>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`msdf-bmfont-xml timed out after ${timeoutMs}ms for "${fontName}"`));
-      }, timeoutMs);
+    return withTimeout(timeoutMs, fontName, async () => {
+      try {
+        await this.initialize();
+        const gen = this.gen as Msdfgen;
 
-      const config = {
-        outputType: 'json' as const,
-        filename: fontName,
-        fontName,
-        fontSize: fontSize as number,
-        charset: (Array.isArray(charset) ? charset.join('') : charset) as string,
-        distanceRange: fieldRange as number,
-        fieldType: 'msdf' as const,
-        textureSize: textureSize as [number, number],
-        'smart-size': true,
-        pot: true,
-        rgba: true,
-        'texture-padding': 2,
-      };
+        // Load font binary into WASM (supports TTF, OTF, WOFF — not WOFF2)
+        gen.loadFont(
+          new Uint8Array(fontBuffer.buffer, fontBuffer.byteOffset, fontBuffer.byteLength),
+        );
 
-      generateBmFont(fontBuffer, config, (error, textures, fontResult) => {
-        clearTimeout(timer);
-        if (error) {
-          return resolve(this.handleGenError(error, fontName) as MSDFFailure);
+        // Resolve charset to an array of unique codepoints
+        const charString = resolveCharset(charset as string | string[] | undefined);
+        const codepoints = [
+          ...new Set(
+            [...charString]
+              .map((c) => c.codePointAt(0))
+              .filter((cp): cp is number => cp !== undefined),
+          ),
+        ];
+
+        if (codepoints.length > 0) {
+          gen.loadGlyphs(codepoints, { preprocess: true });
         }
 
-        try {
-          const fontObj = this.parseFontDescriptor(fontResult);
-          const resultData = this.buildLayout(fontObj, textures, fontName, fieldRange as number);
+        // Atlas dimensions
+        const [maxW, maxH] = (textureSize as [number, number] | null | undefined) ?? [2048, 2048];
 
-          if (hasProgress) {
-            options.onProgress?.(100, 1, 1);
-          }
+        const bins =
+          codepoints.length > 0
+            ? gen.packGlyphs(
+                { size: fontSize as number, range: fieldRange as number },
+                {
+                  maxWidth: maxW,
+                  maxHeight: maxH,
+                  padding: 2,
+                  pot: true,
+                  smart: true,
+                  allowRotation: false,
+                },
+              )
+            : [];
 
-          resolve(
-            this.assembleSuccess(
-              fontName,
-              resultData,
-              textures,
-              charset as string,
-              fontSize as number,
-              textureSize as [number, number],
-              fieldRange as number,
-            ),
-          );
-        } catch (err) {
-          resolve(this.handleGenError(err, fontName) as MSDFFailure);
+        // Render PNG atlases
+        const atlases = bins.map((bin, i) => ({
+          filename: generateAtlasName(fontName, i, bins.length),
+          texture: Buffer.from(gen.createAtlasImage(bin)),
+        }));
+
+        const metrics = gen.metrics;
+        const layout = buildLayout(
+          fontName,
+          bins,
+          metrics,
+          atlases,
+          fontSize as number,
+          fieldRange as number,
+        );
+
+        const charsetStr = resolveCharset(charset as string | string[] | undefined);
+
+        if (hasProgress) {
+          options.onProgress?.(100, 1, 1);
         }
-      });
+
+        return {
+          success: true,
+          fontName,
+          data: layout,
+          atlases,
+          metadata: {
+            charset: charsetStr.length,
+            fontSize: fontSize as number,
+            textureSize: textureSize as [number, number],
+            atlasCount: atlases.length,
+            fieldRange: fieldRange as number,
+            generatedAt: new Date().toISOString(),
+            engine: 'msdfgen-wasm',
+          },
+        } satisfies MSDFSuccess;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          success: false,
+          fontName,
+          error: `msdfgen-wasm failed: ${msg}`,
+        } satisfies MSDFFailure;
+      }
     });
-  }
-
-  private handleGenError(err: unknown, fontName: string): MSDFFailure {
-    const isErr = err instanceof Error;
-    const message = isErr ? (err as Error).message : String(err);
-    const hasP = message.startsWith('msdf-bmfont-xml failed:');
-    let prefix = 'msdf-bmfont-xml failed: ';
-    if (hasP) {
-      prefix = '';
-    }
-    return {
-      success: false,
-      fontName,
-      error: `${prefix}${message}`,
-    };
-  }
-
-  private assembleSuccess(
-    fontName: string,
-    data: MSDFLayout,
-    textures: Array<{ filename: string; texture: Buffer }>,
-    charset: string | string[],
-    fontSize: number,
-    textureSize: [number, number],
-    fieldRange: number,
-  ): MSDFSuccess {
-    return {
-      success: true,
-      fontName,
-      data,
-      atlases: textures.map((t, i) => {
-        return { filename: generateAtlasName(fontName, i, textures.length), texture: t.texture };
-      }),
-      metadata: this.buildMetadata(charset, fontSize, textureSize, textures.length, fieldRange),
-    };
   }
 
   async convertMultiple(
@@ -154,90 +286,16 @@ class MSDFConverter {
         });
         results.push(result);
       } catch (err) {
-        results.push(this.handleGenError(err, fonts[i].name));
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({ success: false, fontName: fonts[i].name, error: msg });
       }
     }
     return results;
   }
 
-  private parseFontDescriptor(fontResult: unknown): Record<string, unknown> {
-    const isString = typeof fontResult === 'string';
-    if (isString) {
-      try {
-        return JSON.parse(fontResult as string);
-      } catch (_err) {
-        throw new Error('msdf-bmfont-xml returned unparseable font descriptor');
-      }
-    }
-
-    const isObj = !!(fontResult && typeof fontResult === 'object');
-    if (isObj) {
-      const maybeData = (fontResult as { data?: unknown }).data;
-      if (maybeData) {
-        const isDataStr = typeof maybeData === 'string';
-        return isDataStr ? JSON.parse(maybeData as string) : (maybeData as Record<string, unknown>);
-      }
-      return fontResult as Record<string, unknown>;
-    }
-
-    throw new Error('Unsupported font descriptor format');
-  }
-
-  private buildLayout(
-    fontObj: Record<string, unknown>,
-    textures: Array<{ filename: string; texture: Buffer }>,
-    _fontName: string,
-    fieldRange: number,
-  ): MSDFLayout {
-    const pages = textures.map((_, i) => {
-      return generateAtlasName(_fontName, i, textures.length);
-    });
-
-    const info = fontObj.info as MSDFLayout['info'];
-    const common = fontObj.common as MSDFLayout['common'];
-    const chars = fontObj.chars as MSDFLayout['chars'];
-    const kerns = fontObj.kernings as MSDFLayout['kernings'];
-    const altKerns = fontObj.kerning as MSDFLayout['kernings'];
-
-    return {
-      info: info ? info : ({} as MSDFLayout['info']),
-      common: common ? common : ({} as MSDFLayout['common']),
-      chars: chars ? chars : [],
-      kernings: kerns ? kerns : altKerns ? altKerns : [],
-      pages,
-
-      distanceField: {
-        fieldType: 'msdf',
-        distanceRange: fieldRange,
-        type: 'msdf',
-        range: fieldRange,
-      },
-    };
-  }
-
-  private buildMetadata(
-    charset: string | string[],
-    fontSize: number,
-    textureSize: [number, number],
-    atlasCount: number,
-    fieldRange: number,
-  ) {
-    const isArr = Array.isArray(charset);
-    const charsetLen = isArr ? (charset as string[]).join('').length : (charset as string).length;
-
-    return {
-      charset: charsetLen,
-      fontSize,
-      textureSize,
-      atlasCount,
-      fieldRange,
-      generatedAt: new Date().toISOString(),
-      engine: 'msdf-bmfont-xml',
-    };
-  }
-
   async dispose(): Promise<void> {
-    // No-op
+    this.gen = null;
+    this.initPromise = null;
   }
 }
 

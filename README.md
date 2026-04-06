@@ -6,10 +6,10 @@
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
 [![NPM Downloads](https://img.shields.io/npm/dm/@a-issaoui/universal-msdf-generator.svg)](https://www.npmjs.com/package/@a-issaoui/universal-msdf-generator)
 
-The **Universal MSDF Generator** is an enterprise-grade orchestration engine for creating Multi-channel Signed Distance Field typographic assets. Built for **Node.js 18+**, it leverages **WebAssembly** (via `msdf-bmfont-xml`) to provide fast generation speeds and production-grade stability.
+The **Universal MSDF Generator** is an enterprise-grade orchestration engine for creating Multi-channel Signed Distance Field typographic assets. Built for **Node.js 18+**, it leverages **WebAssembly** (via `msdfgen-wasm`, Viktor Chlumský's msdfgen) for fast generation speeds, zero CVEs, and production-grade stability.
 
 ## 🚀 Key Features
-- **High-Performance Rendering**: Leverages WebAssembly for fast, cross-platform MSDF conversion.
+- **High-Performance Rendering**: Leverages `msdfgen-wasm` (Viktor Chlumský's authoritative msdfgen, compiled to WASM) for fast, cross-platform MSDF conversion with zero CVEs.
 - **AngelCode Compliance**: Generates standard `.fnt` and `.png` assets compatible with PixiJS v8.
 - **Hyper-Range Stability**: Support for massive 32px distance fields for razor-sharp edges.
 - **Universal Fetching**: Download directly from Google Fonts, remote URLs, or local files.
@@ -132,7 +132,7 @@ const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
 ## 🏅 Technical Excellence
 
 - **100% Code Coverage**: Every single branch and line is rigorously tested.
-- **Wasm Powered**: Leveraging WebAssembly for fast, cross-platform MSDF conversion.
+- **Wasm Powered**: Single-dependency runtime via `msdfgen-wasm` — zero CVEs, no native builds.
 - **Node.js 18+ Compatible**: Tested on Node.js 18, 20, and 22.
 - **Dual Build**: Ships with both **ESM** and **CJS** support.
 

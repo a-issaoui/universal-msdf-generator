@@ -28,10 +28,7 @@ jobs:
       run: npm ci
 
     - name: Security audit
-      # Audit at high severity. The one known moderate advisory (GHSA-5v7r-6r5c-r473)
-      # is an infinite loop in file-type's ASF (audio/video) parser, reachable only
-      # via jimp → msdf-bmfont-xml. We never parse ASF files; risk is zero.
-      run: npm audit --audit-level=high
+      run: npm audit --audit-level=moderate
  
     - name: Lint check (Biome)
       run: npm run check

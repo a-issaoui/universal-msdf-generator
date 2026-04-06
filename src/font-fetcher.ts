@@ -16,7 +16,9 @@ class FontFetcher {
   constructor(options: FetchOptions = {}) {
     this.options = {
       timeout: 30000,
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      // IE 11 UA: Google Fonts returns WOFF format (not WOFF2) for this UA.
+      // msdfgen-wasm supports TTF, OTF, WOFF — but NOT WOFF2 (brotli not bundled).
+      userAgent: 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
       ...options,
     };
   }
@@ -93,7 +95,7 @@ class FontFetcher {
    * (U+0020–U+007E), falling back to the first block when no explicit Latin range is found.
    */
   async fetchGoogleFont(fontName: string, options: GoogleFontOptions = {}): Promise<FontData> {
-    const { weight = '400', style = 'normal', format = 'woff2' } = options;
+    const { weight = '400', style = 'normal', format = 'woff' } = options;
 
     const ital = style === 'italic' ? '1' : '0';
     const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
@@ -160,10 +162,16 @@ class FontFetcher {
 
     if (parsed.length === 0) return null;
 
-    // Apply format preference filter
+    // Apply format preference filter (exact extension match — avoids .woff matching .woff2)
     const formatFiltered =
       preferredFormat !== 'any'
-        ? parsed.filter((b) => b.url.includes(`.${preferredFormat}`))
+        ? parsed.filter((b) => {
+            const ext = `.${preferredFormat}`;
+            const idx = b.url.indexOf(ext);
+            if (idx === -1) return false;
+            const nextChar = b.url[idx + ext.length];
+            return !nextChar || !/[a-z0-9]/i.test(nextChar);
+          })
         : parsed;
 
     const candidates = formatFiltered.length > 0 ? formatFiltered : parsed;
