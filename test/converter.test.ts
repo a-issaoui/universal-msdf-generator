@@ -360,6 +360,62 @@ describe('MSDFConverter', () => {
     });
   });
 
+  // ── edgeColoring + padding ─────────────────────────────────────────────────
+
+  describe('convert: edgeColoring and padding', () => {
+    it('passes edgeColoring to packGlyphs msdf options', async () => {
+      await converter.convert(makeBuf(), 'F', { edgeColoring: 'inktrap' });
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.objectContaining({ edgeColoring: 'inktrap' }),
+        expect.any(Object),
+      );
+    });
+
+    it('defaults edgeColoring to "simple" when not specified', async () => {
+      await converter.convert(makeBuf(), 'F');
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.objectContaining({ edgeColoring: 'simple' }),
+        expect.any(Object),
+      );
+    });
+
+    it('passes padding to packGlyphs atlas options', async () => {
+      await converter.convert(makeBuf(), 'F', { padding: 8 });
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ padding: 8 }),
+      );
+    });
+
+    it('defaults padding to 2 when not specified', async () => {
+      await converter.convert(makeBuf(), 'F');
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ padding: 2 }),
+      );
+    });
+
+    it('inherits edgeColoring and padding from constructor options', async () => {
+      const c = new MSDFConverter({ edgeColoring: 'distance', padding: 4 });
+      MsdfgenMock.create.mockResolvedValue(mockGen);
+      await c.convert(makeBuf(), 'F');
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.objectContaining({ edgeColoring: 'distance' }),
+        expect.objectContaining({ padding: 4 }),
+      );
+    });
+
+    it('per-call edgeColoring overrides constructor default', async () => {
+      const c = new MSDFConverter({ edgeColoring: 'distance' });
+      MsdfgenMock.create.mockResolvedValue(mockGen);
+      await c.convert(makeBuf(), 'F', { edgeColoring: 'inktrap' });
+      expect(mockGen.packGlyphs).toHaveBeenCalledWith(
+        expect.objectContaining({ edgeColoring: 'inktrap' }),
+        expect.any(Object),
+      );
+    });
+  });
+
   // ── convertMultiple ────────────────────────────────────────────────────────
 
   describe('convertMultiple', () => {

@@ -121,6 +121,19 @@ export interface GenerateOptions {
   textureSize?: [number, number] | null;
   /** Range of the distance field in pixels */
   fieldRange?: number;
+  /**
+   * Edge coloring algorithm used during MSDF computation.
+   * - `simple`   — fast, good for most fonts (default)
+   * - `inktrap`  — reduces artifacts on complex/decorative glyphs
+   * - `distance` — better gradient smoothness for certain typefaces
+   */
+  edgeColoring?: 'simple' | 'inktrap' | 'distance';
+  /**
+   * Padding in pixels between glyphs in the atlas.
+   * Prevents bleeding at atlas borders and is required for correct mipmapping.
+   * Default: 2.
+   */
+  padding?: number;
   /** Whether to attempt fixing overlapping glyph paths */
   fixOverlaps?: boolean;
   /** Friendly name for the output file (if not provided, a slug derived from the font name is used) */

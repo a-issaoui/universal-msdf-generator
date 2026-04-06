@@ -171,6 +171,8 @@ class MSDFConverter {
     const fontSize = options.fontSize ?? this.options.fontSize;
     const textureSize = options.textureSize ?? this.options.textureSize;
     const fieldRange = options.fieldRange ?? this.options.fieldRange;
+    const edgeColoring = options.edgeColoring ?? this.options.edgeColoring ?? 'simple';
+    const padding = options.padding ?? this.options.padding ?? 2;
     const timeoutMs = options.generationTimeout ?? this.options.generationTimeout ?? 60_000;
 
     const hasProgress = !!options.onProgress;
@@ -208,11 +210,11 @@ class MSDFConverter {
         const bins =
           codepoints.length > 0
             ? gen.packGlyphs(
-                { size: fontSize as number, range: fieldRange as number },
+                { size: fontSize as number, range: fieldRange as number, edgeColoring },
                 {
                   maxWidth: maxW,
                   maxHeight: maxH,
-                  padding: 2,
+                  padding,
                   pot: true,
                   smart: true,
                   allowRotation: false,
