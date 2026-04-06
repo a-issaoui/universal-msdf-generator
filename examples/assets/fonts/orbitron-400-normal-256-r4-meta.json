@@ -1,0 +1,9 @@
+{
+  "charset": 62,
+  "fontSize": 256,
+  "textureSize": [2048, 2048],
+  "atlasCount": 1,
+  "fieldRange": 4,
+  "generatedAt": "2026-04-06T08:14:17.470Z",
+  "engine": "msdf-bmfont-xml"
+}

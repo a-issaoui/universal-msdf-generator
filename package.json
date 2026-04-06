@@ -1,0 +1,75 @@
+{
+  "name": "universal-msdf-generator",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Enterprise-grade Universal MSDF Font Generator for Google Fonts, URLs, and Local Files. TypeScript 6.0 Native with high-performance C++ bindings.",
+  "author": "A. Issaoui <github.com/a-issaoui>",
+  "homepage": "https://github.com/a-issaoui/universal-msdf-generator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a-issaoui/universal-msdf-generator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/a-issaoui/universal-msdf-generator/issues"
+  },
+  "funding": "https://github.com/sponsors/a-issaoui",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "universal-msdf": "./dist/cli.cjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check --write .",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "audit": "npm audit",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run test",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,ts,json}": [
+      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true"
+    ]
+  },
+  "keywords": [
+    "typography",
+    "rendering",
+    "pixijs",
+    "webgl",
+    "asset-pipeline"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
+    "@types/node": "^25.5.2",
+    "@types/opentype.js": "^1.3.9",
+    "@vitest/coverage-v8": "^4.1.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "msdf-bmfont-xml": "^2.8.0",
+    "opentype.js": "^1.3.4"
+  }
+}

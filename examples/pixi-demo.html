@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSDF Perfect Text Reference | PixiJS</title>
+    <script src="https://pixijs.download/v8.17.1/pixi.min.js"></script>
+    <style>
+        /* ═══════════════════════════════════════════════════════════════════════
+           CSS RESET & BASE STYLES
+           Critical: Remove margins to prevent scrollbars, set dark background
+           ═══════════════════════════════════════════════════════════════════════ */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        /*
+         * BODY CONFIGURATION
+         * overflow: hidden - Prevents scrollbars during zoom/pan
+         * background: #020617 - Deep slate matches canvas for seamless look
+         * cursor: grab - Indicates draggable interface
+         */
+        body {
+            overflow: hidden;
+            background: #ffffff;
+            font-family: 'Inter', -apple-system, sans-serif;
+            color: white;
+            cursor: grab;
+        }
+
+        /* Drag state: Changes cursor and prevents text selection */
+        body.is-dragging { cursor: grabbing; }
+        body.is-dragging * { user-select: none; }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           CANVAS RENDERING OPTIMIZATION
+           image-rendering: pixelated - Prevents browser from smoothing the canvas
+           when scaled. Essential for crisp MSDF text at non-integer zoom levels.
+           ═══════════════════════════════════════════════════════════════════════ */
+        canvas {
+            display: block;
+            image-rendering: crisp-edges;
+        }
+
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           UI OVERLAY STYLES
+           Semi-transparent glassmorphism panel for information display
+           pointer-events: none - Allows clicks to pass through to canvas
+           ═══════════════════════════════════════════════════════════════════════ */
+        #ui-overlay {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            z-index: 100;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 24px;
+            border-radius: 20px;
+            border: 1px solid rgba(0,0,0,0.1);
+            backdrop-filter: blur(15px);
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+
+        h1 {
+            margin: 0 0 5px;
+            font-size: 1.2rem;
+            font-weight: 900;
+            color: #000000;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+        }
+
+        p {
+            margin: 0;
+            font-size: .8rem;
+            color: #666666;
+            font-weight: 500;
+            letter-spacing: .02em;
+        }
+
+        p.secondary {
+            margin-top: 6px;
+            color: #999999;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           KEYBOARD SHORTCUTS HINT
+           Auto-fades after 8 seconds to reduce UI clutter
+           ═══════════════════════════════════════════════════════════════════════ */
+        #kb-hint {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            z-index: 100;
+            background: rgba(255,255,255,0.9);
+            border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 14px;
+            padding: 14px 18px;
+            backdrop-filter: blur(15px);
+            pointer-events: none;
+            font-size: .65rem;
+            color: #999999;
+            font-weight: 700;
+            letter-spacing: .06em;
+            line-height: 1.9;
+            opacity: 1;
+            transition: opacity 1s ease;
+        }
+
+        #kb-hint.fade { opacity: 0; }
+
+        #kb-hint kbd {
+            display: inline-block;
+            background: rgba(0,0,0,.05);
+            border: 1px solid rgba(0,0,0,.2);
+            border-radius: 4px;
+            padding: 1px 5px;
+            color: #00000088;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: .6rem;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           RENDERER BADGE
+           Shows WebGL/WebGPU/Canvas mode and GPU vendor for debugging
+           ═══════════════════════════════════════════════════════════════════════ */
+        #renderer-badge {
+            position: absolute;
+            bottom: 110px;
+            right: 30px;
+            z-index: 100;
+            background: rgba(255,255,255,0.9);
+            border: 1px solid rgba(0,0,0,.2);
+            border-radius: 100px;
+            padding: 7px 16px;
+            font-size: .65rem;
+            font-weight: 900;
+            letter-spacing: .12em;
+            color: #000000;
+            text-transform: uppercase;
+            backdrop-filter: blur(10px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity .6s ease;
+        }
+
+        #renderer-badge.visible { opacity: 1; }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           HOME INDICATOR
+           Shows when view is offset from center (0,0 at 1x zoom)
+           ═══════════════════════════════════════════════════════════════════════ */
+        #home-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 6px;
+            height: 6px;
+            background: rgba(0,0,0,.2);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity .4s;
+            box-shadow: 0 0 12px 4px rgba(0,0,0,.1);
+        }
+
+        #home-indicator.visible { opacity: 1; }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ZOOM CONTROLS
+           Centered bottom panel with slider and reset button
+           ═══════════════════════════════════════════════════════════════════════ */
+        .zoom-controls {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            background: rgba(255,255,255,0.9);
+            padding: 18px 30px;
+            border-radius: 100px;
+            border: 1px solid rgba(0,0,0,.2);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.6);
+            backdrop-filter: blur(10px);
+        }
+
+        #reset-pan {
+            background: rgba(0,0,0,.05);
+            border: 1px solid rgba(0,0,0,.3);
+            color: #000000;
+            border-radius: 100px;
+            padding: 6px 16px;
+            font-size: .65rem;
+            font-weight: 900;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background .2s, border-color .2s;
+            white-space: nowrap;
+        }
+
+        #reset-pan:hover {
+            background: rgba(34,211,238,.2);
+            border-color: rgba(34,211,238,.5);
+        }
+
+        /* Custom range slider styling */
+        input[type="range"] {
+            width: 200px;
+            cursor: pointer;
+            background: #e5e5e5;
+            height: 6px;
+            border-radius: 3px;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #000000;
+            cursor: pointer;
+        }
+
+        #zoom-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            color: #000000;
+            font-weight: 800;
+            min-width: 55px;
+            text-align: right;
+            text-shadow: 0 0 10px rgba(34,211,238,.3);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           PAN COORDINATES DISPLAY
+           Shows X,Y offset from center. Changes color when active.
+           ═══════════════════════════════════════════════════════════════════════ */
+        #pan-display {
+            position: absolute;
+            bottom: 110px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: .65rem;
+            color: #cccccc;
+            font-weight: 700;
+            letter-spacing: .05em;
+            pointer-events: none;
+            white-space: nowrap;
+            transition: color .3s;
+        }
+
+        #pan-display.active { color: #00000088; }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           DEBUG OVERLAY
+           Technical metrics: FPS, Delta, Scale, Pan, Velocity, GPU
+           Toggle with Shift+~ (backtick)
+           ═══════════════════════════════════════════════════════════════════════ */
+        #debug-overlay {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: #000000;
+            opacity: 1;
+            pointer-events: none;
+            z-index: 999;
+            line-height: 1.8;
+            white-space: pre;
+            transition: opacity .3s;
+            background: rgba(255,255,255,.9);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,.2);
+        }
+
+        #debug-overlay.hidden { opacity: 0; }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           LOADING SCREEN
+           Displays during font generation and texture loading
+           ═══════════════════════════════════════════════════════════════════════ */
+        #loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #ffffff;
+            z-index: 200;
+            transition: opacity .8s cubic-bezier(.4,0,.2,1);
+        }
+
+        .loader-ring {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(0,0,0,.1);
+            border-top: 3px solid #000000;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+    <base target="_blank">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     LOADING SCREEN
+     Removed via JS when font is ready
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="loading">
+    <div class="loader-ring"></div>
+    <div style="font-size:1.1rem;font-weight:900;color:#22d3ee;letter-spacing:.2em;text-transform:uppercase;">
+        Ultra Precision
+    </div>
+    <div id="loading-status" style="font-size:.75rem;color:#475569;margin-top:10px;font-weight:700;">
+        Initiating Vector-Sharp Core…
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     UI OVERLAY
+     Informational only, no interaction
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="ui-overlay">
+    <h1>SQUID GAME</h1>
+    <p>MSDF Perfect Text Reference</p>
+    <p class="secondary">Drag · Scroll · Double-click to reset</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     KEYBOARD SHORTCUTS REFERENCE
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="kb-hint">
+    <kbd>+</kbd> / <kbd>−</kbd> &nbsp;zoom in / out<br>
+    <kbd>0</kbd> &nbsp;reset zoom to 1×<br>
+    <kbd>R</kbd> / <kbd>Esc</kbd> &nbsp;reset everything<br>
+    <kbd>⇧~</kbd> &nbsp;toggle debug overlay
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     STATUS INDICATORS
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="renderer-badge">— WebGL 2 —</div>
+<div id="home-indicator"></div>
+<div id="pan-display">X: +0  Y: +0</div>
+<div id="debug-overlay"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     ZOOM CONTROL PANEL
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<div class="zoom-controls">
+    <button id="reset-pan" type="button">⌖ Reset</button>
+    <span style="font-size:.65rem;color:#475569;font-weight:900;text-transform:uppercase;letter-spacing:.1em;">Zoom</span>
+
+    <input type="range" id="zoom" min="0.1" max="25" step="0.1" value="1.0">
+    <span id="zoom-val">1.0×</span>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     MAIN APPLICATION SCRIPT
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<script type="module">
+    /**
+     * PERFECT MSDF TEXT RENDERING REFERENCE
+     *
+     * This implementation demonstrates the optimal configuration for rendering
+     * crisp, scalable text using Multi-channel Signed Distance Fields (MSDF) in PixiJS.
+     *
+     * KEY CONCEPTS:
+     * - MSDF: Stores distance to glyph edges in RGB channels for high-quality scaling
+     * - Nearest filtering: Pixel-perfect rendering at exact sizes (no interpolation blur)
+     * - Round pixels: Snaps to device pixel grid to prevent subpixel blurring
+     * - High resolution: Renders at 3x DPI for retina displays
+     */
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GLOBAL STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** @type {PIXI.Application} Main PixiJS application instance */
+    let app;
+
+    /** @type {PIXI.Container} Root container for the text scene */
+    let sceneContainer;
+
+    /** @type {PIXI.Container} Reference to the text object for cleanup */
+    let textObject;
+
+    /** @type {string} GPU renderer information for debugging */
+    let rendererLabel = 'WebGL 2';
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ANIMATION STATE (Smooth damping)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Current pan offset in screen pixels */
+    const panOffset    = { x: 0, y: 0 };
+
+    /** Target pan offset (where we want to be) */
+    const targetPan    = { x: 0, y: 0 };
+
+    /** Current scale factor (1.0 = 100%) */
+    let currentScale = 1.0;
+
+    /** Target scale factor */
+    let targetScale  = 1.0;
+
+    /**
+     * Damping coefficients for smooth animation
+     * Lower = smoother but slower, Higher = snappier but potentially jerky
+     */
+    const DAMP_SCALE = 0.12;  // Zoom smoothing
+    const DAMP_PAN   = 0.14;  // Pan smoothing
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DRAG & MOMENTUM PHYSICS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const drag = {
+        active: false,   // Is user currently dragging?
+        startX: 0,       // Initial mouse X
+        startY: 0,       // Initial mouse Y
+        originX: 0,      // Initial pan X
+        originY: 0,      // Initial pan Y
+        lastX: 0,        // Previous frame X (for velocity calc)
+        lastY: 0         // Previous frame Y
+    };
+
+    const velocity = { x: 0, y: 0 };  // Current throw velocity
+    let momentumRAF = null;           // Animation frame ID for momentum
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DOM REFERENCES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const zoomSlider = document.getElementById('zoom');
+    const zoomText   = document.getElementById('zoom-val');
+    const panDisplay = document.getElementById('pan-display');
+    const homeInd    = document.getElementById('home-indicator');
+    const debugEl    = document.getElementById('debug-overlay');
+    const kbHint     = document.getElementById('kb-hint');
+    let showDebug    = true;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UTILITY FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Sets the target zoom level with clamping
+     * @param {number} v - Desired zoom level (0.1 to 25)
+     */
+    function setZoom(v) {
+        targetScale = Math.max(0.1, Math.min(25, v));
+        zoomText.innerText = `${targetScale.toFixed(1)}×`;
+    }
+
+    /**
+     * Resets all view parameters to default
+     * Clears momentum and returns to center at 1x zoom
+     */
+    function resetAll() {
+        targetPan.x = 0;
+        targetPan.y = 0;
+        velocity.x  = 0;
+        velocity.y  = 0;
+        cancelMomentum();
+        setZoom(1.0);
+    }
+
+    /**
+     * Updates the heads-up display (coordinates and home indicator)
+     * Called every frame by the ticker
+     */
+    function updateHUD() {
+        const x = Math.round(panOffset.x);
+        const y = Math.round(panOffset.y);
+
+        // Format with sign for positive numbers
+        panDisplay.innerText = `X: ${x >= 0 ? '+' : ''}${x}  Y: ${y >= 0 ? '+' : ''}${y}`;
+        panDisplay.classList.toggle('active', x !== 0 || y !== 0);
+
+        // Show home indicator when not at origin
+        const atHome = Math.abs(panOffset.x) < 1 &&
+            Math.abs(panOffset.y) < 1 &&
+            Math.abs(currentScale - 1) < 0.01;
+        homeInd.classList.toggle('visible', !atHome);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INPUT HANDLING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Initializes drag operation
+     * @param {number} clientX - Mouse/touch X position
+     * @param {number} clientY - Mouse/touch Y position
+     * @param {HTMLElement} target - Element under cursor (for hit testing)
+     */
+    function onDown(clientX, clientY, target) {
+        // Ignore clicks on UI elements
+        if (target?.closest?.('.zoom-controls') ||
+            target?.closest?.('#ui-overlay') ||
+            target?.closest?.('#kb-hint')) return;
+
+        cancelMomentum();
+        drag.active  = true;
+        drag.startX  = drag.lastX = clientX;
+        drag.startY  = drag.lastY = clientY;
+        drag.originX = targetPan.x;
+        drag.originY = targetPan.y;
+        velocity.x   = 0;
+        velocity.y   = 0;
+        document.body.classList.add('is-dragging');
+    }
+
+    /**
+     * Handles drag movement
+     * Calculates velocity for momentum throwing
+     */
+    function onMove(clientX, clientY) {
+        if (!drag.active) return;
+
+        // Calculate instantaneous velocity for momentum
+        velocity.x = clientX - drag.lastX;
+        velocity.y = clientY - drag.lastY;
+        drag.lastX = clientX;
+        drag.lastY = clientY;
+
+        // Update target position (actual movement happens in ticker via damping)
+        targetPan.x = drag.originX + (clientX - drag.startX);
+        targetPan.y = drag.originY + (clientY - drag.startY);
+    }
+
+    /**
+     * Ends drag and initiates momentum if velocity is significant
+     */
+    function onUp() {
+        if (!drag.active) return;
+        drag.active = false;
+        document.body.classList.remove('is-dragging');
+        startMomentum();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MOMENTUM PHYSICS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const DECAY = 0.92;  // Velocity decay factor per frame (0-1)
+
+    /**
+     * Starts inertial scrolling after drag release
+     * Velocity decays exponentially until below threshold
+     */
+    function startMomentum() {
+        cancelMomentum();
+
+        (function step() {
+            // Continue while velocity is significant (> 0.3 pixels)
+            if (Math.abs(velocity.x) > 0.3 || Math.abs(velocity.y) > 0.3) {
+                targetPan.x += velocity.x;
+                targetPan.y += velocity.y;
+                velocity.x  *= DECAY;
+                velocity.y  *= DECAY;
+                momentumRAF = requestAnimationFrame(step);
+            } else {
+                velocity.x = velocity.y = 0;
+            }
+        })();
+    }
+
+    function cancelMomentum() {
+        if (momentumRAF) {
+            cancelAnimationFrame(momentumRAF);
+            momentumRAF = null;
+        }
+        velocity.x = velocity.y = 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EVENT LISTENERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Mouse interactions
+    window.addEventListener('mousedown',  e => onDown(e.clientX, e.clientY, e.target));
+    window.addEventListener('mousemove',  e => onMove(e.clientX, e.clientY));
+    window.addEventListener('mouseup',    ()  => onUp());
+
+    // Touch interactions (passive for performance)
+    window.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        drag.lastX = t.clientX;
+        drag.lastY = t.clientY;
+        onDown(t.clientX, t.clientY, e.target);
+    }, { passive: true });
+
+    window.addEventListener('touchmove',  e => {
+        const t = e.touches[0];
+        onMove(t.clientX, t.clientY);
+    }, { passive: true });
+
+    window.addEventListener('touchend',   ()  => onUp());
+
+    /**
+     * Zoom-to-cursor behavior
+     * Zooms in/out while keeping the point under the mouse stationary
+     * Essential for intuitive map/image viewing
+     */
+    window.addEventListener('wheel', e => {
+        e.preventDefault();
+
+        const oldScale = targetScale;
+        const newScale = Math.max(0.1, Math.min(25, targetScale - e.deltaY * 0.005));
+        if (oldScale === newScale) return;
+
+        // Calculate mouse position relative to canvas center
+        const rect    = app?.canvas?.getBoundingClientRect?.() ?? { left: 0, top: 0 };
+        const mouseX  = e.clientX - rect.left;
+        const mouseY  = e.clientY - rect.top;
+        const centerX = (app?.screen?.width  ?? window.innerWidth)  / 2;
+        const centerY = (app?.screen?.height ?? window.innerHeight) / 2;
+
+        // Convert mouse pos to world space (accounting for current pan/scale)
+        const worldX = (mouseX - centerX - panOffset.x) / oldScale;
+        const worldY = (mouseY - centerY - panOffset.y) / oldScale;
+
+        // Adjust pan to keep mouse over same world point after zoom
+        targetPan.x = mouseX - centerX - worldX * newScale;
+        targetPan.y = mouseY - centerY - worldY * newScale;
+
+        cancelMomentum();
+        setZoom(newScale);
+    }, { passive: false });
+
+    // UI Controls
+    zoomSlider.addEventListener('input', e => setZoom(parseFloat(e.target.value)));
+
+    window.addEventListener('dblclick', e => {
+        if (e.target.closest?.('.zoom-controls') || e.target.closest?.('#kb-hint')) return;
+        resetAll();
+    });
+
+    document.getElementById('reset-pan').addEventListener('click', resetAll);
+
+    // Keyboard shortcuts
+    window.addEventListener('keydown', e => {
+        if (e.target.matches('input')) return;
+
+        switch (e.key) {
+            case '0':                      setZoom(1.0); break;
+            case '+': case '=':            setZoom(targetScale * 1.2); break;
+            case '-': case '_':            setZoom(targetScale / 1.2); break;
+            case 'r': case 'R':
+            case 'Escape':                 resetAll(); break;
+        }
+
+        if (e.shiftKey && e.key === '~') {
+            showDebug = !showDebug;
+            debugEl.classList.toggle('hidden', !showDebug);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIALIZATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Main initialization function
+     * Sets up PixiJS application with optimal settings for crisp text
+     */
+    async function init() {
+        app = new PIXI.Application();
+
+        /**
+         * PIXI APPLICATION CONFIGURATION
+         *
+         * resizeTo: window - Canvas fills entire viewport
+         * backgroundColor: 0x020617 - Matches CSS background
+         * antialias: true - MSAA for geometry edges (not text)
+         * resolution: max(DPR, 3) - Force 3x minimum for crisp rendering
+         * autoDensity: true - Adjusts CSS size to match resolution
+         * preference: 'webgl' - Force WebGL 2 for best compatibility
+         */
+        await app.init({
+            resizeTo:        window,
+            backgroundColor: 0xffffff,
+            antialias:       true,
+            resolution:      Math.max(window.devicePixelRatio, 3),
+            autoDensity:     true,
+            preference:      'webgl',
+        });
+
+        document.body.appendChild(app.canvas);
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // RENDERER DETECTION
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const badge = document.getElementById('renderer-badge');
+        rendererLabel = app.renderer.type === 1 ? 'WebGL 2' :
+            app.renderer.type === 2 ? 'WebGPU' : 'Canvas';
+
+        try {
+            const gl = app.renderer.gl;
+            if (gl) {
+                console.info('GL Version:', gl.getParameter(gl.VERSION));
+                const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+                if (dbg) {
+                    const gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)
+                        .replace(/[/()[\].].*/g, '')
+                        .trim();
+                    rendererLabel += ` · ${gpu}`;
+                }
+            }
+        } catch (_) {}
+
+        badge.textContent = `— ${rendererLabel} —`;
+        setTimeout(() => badge.classList.add('visible'), 1000);
+
+        // Fade out keyboard hint after 8 seconds
+        setTimeout(() => kbHint.classList.add('fade'), 8000);
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SCENE SETUP
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /**
+         * Scene Container Configuration
+         * roundPixels: true - CRITICAL for crisp text
+         *   Rounds x/y coordinates to nearest integer before rendering.
+         *   Prevents subpixel positioning which causes blurriness.
+         */
+        sceneContainer = new PIXI.Container();
+        sceneContainer.roundPixels = true;
+        app.stage.addChild(sceneContainer);
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // ANIMATION LOOP
+        // ═══════════════════════════════════════════════════════════════════════
+
+        app.ticker.add(() => {
+            // Smooth interpolation (damping) for scale and position
+            currentScale += (targetScale - currentScale) * DAMP_SCALE;
+            panOffset.x  += (targetPan.x  - panOffset.x)  * DAMP_PAN;
+            panOffset.y  += (targetPan.y  - panOffset.y)  * DAMP_PAN;
+
+            // Apply transformations
+            // Math.round ensures we land on exact pixels
+            sceneContainer.position.set(
+                Math.round(app.screen.width  / 2 + panOffset.x),
+                Math.round(app.screen.height / 2 + panOffset.y)
+            );
+            sceneContainer.scale.set(currentScale);
+
+            // Sync UI
+            zoomSlider.value = currentScale;
+            updateHUD();
+
+            // Update debug info
+            debugEl.textContent =
+                `FPS     ${Math.round(app.ticker.FPS)}\n` +
+                `Delta   ${app.ticker.deltaMS.toFixed(2)}ms\n` +
+                `Scale   ${currentScale.toFixed(3)}  →  ${targetScale.toFixed(3)}\n` +
+                `Pan     ${Math.round(panOffset.x)}, ${Math.round(panOffset.y)}\n` +
+                `Target  ${Math.round(targetPan.x)}, ${Math.round(targetPan.y)}\n` +
+                `Vel     ${velocity.x.toFixed(1)}, ${velocity.y.toFixed(1)}\n` +
+                `GPU     ${rendererLabel}`;
+        });
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // LOAD FONT
+        // ═══════════════════════════════════════════════════════════════════════
+
+        await loadProgrammaticFont('Orbitron');
+
+        // Hide loading screen
+        document.getElementById('loading').style.opacity = '0';
+        setTimeout(() => document.getElementById('loading').remove(), 800);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FONT LOADING - THE CRITICAL PART FOR CRISP TEXT
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Loads MSDF font from server with optimal texture settings
+     *
+     * MSDF (Multi-channel Signed Distance Field) stores distance to glyph edges
+     * in RGB channels. This allows high-quality scaling without pixelation.
+     *
+     * PERFECT CRISP TEXT CHECKLIST:
+     * ✓ scaleMode: 'nearest' - No interpolation (pixel-perfect)
+     * ✓ roundPixels: true - Snaps to pixel grid
+     * ✓ autoGenerateMipmaps: false - Prevents blur from mipmapping
+     * ✓ mipmapMode: 'none' - Explicitly disable mipmaps
+     * ✓ anisotropicLevel: 16 - Max quality (though less relevant with nearest)
+     * ✓ High resolution rendering (3x DPI)
+     */
+    async function loadProgrammaticFont(fontName) {
+        console.log(`📡 Requesting MSDF Generation: ${fontName}`);
+        const statusEl = document.getElementById('loading-status');
+
+        try {
+            statusEl.innerText = `GENERATING MSDF: ${fontName}…`;
+            statusEl.style.color = '#22d3ee';
+
+            // Request font generation from server
+            const response = await fetch(`/api/generate?font=${encodeURIComponent(fontName)}`);
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Generation failed');
+            }
+
+            console.log('✅ Generation complete:', result.fontName);
+            statusEl.innerText = `LOADING: ${result.fontName}…`;
+
+            const identity = result.fontName;
+            const fntUrl = `/examples/assets/fonts/${identity}.fnt`;
+            const pngUrl = `/examples/assets/fonts/${identity}.png`;
+
+            /**
+             * TEXTURE LOADING CONFIGURATION
+             *
+             * These settings are CRITICAL for crisp text:
+             *
+             * 1. scaleMode: 'nearest'
+             *    - Uses nearest-neighbor interpolation
+             *    - No blurring between pixels
+             *    - Best for pixel-art style crispness
+             *
+             * 2. autoGenerateMipmaps: false
+             *    - Prevents automatic mipmap generation
+             *    - Mipmaps cause blur when texture is scaled down
+             *
+             * 3. anisotropicLevel: 16
+             *    - Maximum anisotropic filtering
+             *    - Helps with angled text (less relevant with nearest)
+             */
+            const _texture = await PIXI.Assets.load({
+                src: pngUrl,
+                data: {
+                    autoGenerateMipmaps: false,
+                    scaleMode: 'nearest',        // ← CRITICAL: No interpolation
+                    anisotropicLevel: 16
+                }
+            });
+
+            // Load font metadata (.fnt file)
+            const font = await PIXI.Assets.load({
+                src: `${fntUrl}?v=${Date.now()}`, // Cache busting
+                alias: identity,
+                data: { resourceOptions: { autoGenerateMipmaps: false } }
+            });
+
+            /**
+             * APPLY TEXTURE SETTINGS TO ALL GLYPHS
+             *
+             * PixiJS BitmapFont stores individual glyph textures.
+             * We must configure each one for consistent rendering.
+             */
+            if (font.textures) {
+                Object.values(font.textures).forEach(tex => {
+                    const s = tex.source;
+                    s.autoGenerateMipmaps = false;
+                    s.mipmapMode = 'none';           // ← Disable mipmaps
+                    s.scaleMode = 'nearest';         // ← Nearest neighbor
+                    s.anisotropicLevel = 16;
+                    s.update();                       // Apply changes
+                });
+            }
+
+            statusEl.innerText = `VERSION ACTIVE: ${identity}`;
+            if (textObject) sceneContainer.removeChild(textObject);
+
+            // ═══════════════════════════════════════════════════════════════════
+            // TEXT COMPOSITION - PERFECT CRISP CONFIGURATION
+            // ═══════════════════════════════════════════════════════════════════
+
+            /**
+             * Container Setup
+             * roundPixels: true ensures the entire text block snaps to pixel grid
+             */
+            const group = new PIXI.Container();
+            group.roundPixels = true;
+
+            /**
+             * BitmapText Configuration
+             *
+             * fontFamily: Must match the loaded font alias
+             * fontSize: 256 - Matches the MSDF generation size in serve.js
+             *              This is the "native" resolution of the SDF texture.
+             *              Rendering at this size = 1:1 pixel mapping = maximum crispness.
+             *
+             * align: 'center' - Horizontal centering within text bounds
+             * fill: 0xffffff - Pure white (no tinting, cleanest look)
+             */
+            const main = new PIXI.BitmapText({
+                text: 'SQUID\nGAME',
+                style: {
+                    fontFamily: identity,
+                    fontSize: 256,              // ← Matches MSDF generation size
+                    align: 'center',
+                    fill: 0x000000              // ← Black text on white
+                }
+            });
+
+            /**
+             * Anchor point (0.5, 0.5) = center of text
+             * This makes positioning and scaling occur from the center,
+             * which is more intuitive for zoom operations.
+             */
+            main.anchor.set(0.5);
+
+            group.addChild(main);
+
+            /**
+             * WHY NO GAMMA CORRECTION FILTER?
+             *
+             * The previous implementation had a gamma correction shader:
+             *   c.a = pow(c.a, 0.4545)
+             *
+             * This was removed because:
+             * 1. MSDF textures are generated with correct gamma already
+             * 2. The pow() operation slightly softens edges
+             * 3. For absolute sharpness, we want raw nearest-neighbor sampling
+             *
+             * If text looks too "thin" or "thick", adjust the MSDF generation
+             * parameters (fieldRange) rather than using gamma correction.
+             */
+
+            sceneContainer.addChild(group);
+            textObject = group;
+
+        } catch (err) {
+            console.error('💥 Font loading failed:', err);
+            statusEl.innerText = `ERROR: ${err.message}`;
+            statusEl.style.color = '#ef4444';
+
+            // Retry after 3 seconds
+            setTimeout(() => {
+                statusEl.innerText = 'RETRYING…';
+                statusEl.style.color = '#22d3ee';
+                loadProgrammaticFont('Orbitron');
+            }, 3000);
+        }
+    }
+
+    // Start the application
+    init();
+</script>
+</body>
+</html>
