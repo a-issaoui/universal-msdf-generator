@@ -82,6 +82,12 @@ describe('UniversalMSDFGenerator Hardened', () => {
 
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(false);
     await generator.generate('F', { reuseExisting: true, outputDir: './out' });
+    vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(true);
+    await generator.generate('F', {
+      reuseExisting: true,
+      outputDir: './out',
+      outputFormat: undefined,
+    });
 
     await generator.generate('F', { reuseExisting: true, outputDir: './out', force: true });
   });

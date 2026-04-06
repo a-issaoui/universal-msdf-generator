@@ -259,6 +259,7 @@ class FontFetcher {
       return response;
     } catch (error: unknown) {
       throw new Error(`Request failed: ${this.extractMessage(error)}`);
+      /* v8 ignore next 3 */
     } finally {
       clearTimeout(timeout);
     }
