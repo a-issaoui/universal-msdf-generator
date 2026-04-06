@@ -20,7 +20,7 @@ async function googleFontsExample() {
     for (const font of fonts) {
       console.log(`Generating ${font.name} (${font.weight}):`);
 
-      const result = await generator.generateFromGoogle(font.name, {
+      const result = await generator.generate(font.name, {
         weight: font.weight,
         charset: 'alphanumeric',
         fontSize: 48,

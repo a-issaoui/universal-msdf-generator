@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FontFetcher from '../src/font-fetcher.js';
+import type { FontSource } from '../src/types.js';
 
 vi.mock('node:fs', () => ({
   promises: {
@@ -10,8 +11,20 @@ vi.mock('node:fs', () => ({
   statSync: vi.fn(),
 }));
 
-// Mock global fetch
-global.fetch = vi.fn();
+// Helper type to access private FontFetcher methods in tests
+type FontFetcherPrivate = {
+  detectSourceType(source: FontSource | { byteLength: number }): Promise<string>;
+  extractLatinFontUrl(css: string, format: string): string | null;
+  detectFormatFromUrl(url: string): string;
+  extractFontNameFromUrl(url: string): string;
+  makeRequest(url: string): Promise<Response>;
+};
+
+const priv = (f: FontFetcher) => f as unknown as FontFetcherPrivate;
+
+// Typed mock fetch helpers
+const mockFetch = vi.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
 
 describe('FontFetcher', () => {
   let fetcher: FontFetcher;
@@ -23,38 +36,46 @@ describe('FontFetcher', () => {
 
   describe('detectSourceType', () => {
     it('should detect Google Font names', async () => {
-      expect(await (fetcher as any).detectSourceType('Open Sans')).toBe('google');
-      expect(await (fetcher as any).detectSourceType('Roboto-Bold')).toBe('google');
+      expect(await priv(fetcher).detectSourceType('Open Sans')).toBe('google');
+      expect(await priv(fetcher).detectSourceType('Roboto-Bold')).toBe('google');
     });
 
     it('should detect URLs', async () => {
-      expect(await (fetcher as any).detectSourceType('https://example.com/font.ttf')).toBe('url');
-      expect(await (fetcher as any).detectSourceType('http://fonts.com/test.woff')).toBe('url');
+      expect(await priv(fetcher).detectSourceType('https://example.com/font.ttf')).toBe('url');
+      expect(await priv(fetcher).detectSourceType('http://fonts.com/test.woff')).toBe('url');
     });
 
     it('should detect URL object', async () => {
-      expect(await (fetcher as any).detectSourceType(new URL('https://ex.com'))).toBe('url');
+      expect(
+        await priv(fetcher).detectSourceType(new URL('https://ex.com') as unknown as string),
+      ).toBe('url');
     });
 
     it('should detect local files', async () => {
-      (fs.stat as any).mockResolvedValue({ isFile: () => true });
-      expect(await (fetcher as any).detectSourceType('./font.ttf')).toBe('local');
+      vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true } as unknown as Awaited<
+        ReturnType<typeof fs.stat>
+      >);
+      expect(await priv(fetcher).detectSourceType('./font.ttf')).toBe('local');
     });
 
     it('should handle non-file local paths', async () => {
-      (fs.stat as any).mockResolvedValue({ isFile: () => false });
-      expect(await (fetcher as any).detectSourceType('./directory')).toBe('unknown');
+      vi.mocked(fs.stat).mockResolvedValue({ isFile: () => false } as unknown as Awaited<
+        ReturnType<typeof fs.stat>
+      >);
+      expect(await priv(fetcher).detectSourceType('./directory')).toBe('unknown');
     });
 
     it('should handle missing local files', async () => {
-      (fs.stat as any).mockRejectedValue(new Error('Missing'));
-      expect(await (fetcher as any).detectSourceType('not-a-font.txt')).toBe('unknown');
+      vi.mocked(fs.stat).mockRejectedValue(new Error('Missing'));
+      expect(await priv(fetcher).detectSourceType('not-a-font.txt')).toBe('unknown');
     });
 
     it('should detect buffers', async () => {
-      expect(await (fetcher as any).detectSourceType(Buffer.alloc(10))).toBe('buffer');
-      expect(await (fetcher as any).detectSourceType(new ArrayBuffer(10))).toBe('buffer');
-      expect(await (fetcher as any).detectSourceType({ byteLength: 10 })).toBe('buffer');
+      expect(await priv(fetcher).detectSourceType(Buffer.alloc(10))).toBe('buffer');
+      expect(await priv(fetcher).detectSourceType(new ArrayBuffer(10) as unknown as string)).toBe(
+        'buffer',
+      );
+      expect(await priv(fetcher).detectSourceType({ byteLength: 10 })).toBe('buffer');
     });
   });
 
@@ -76,7 +97,9 @@ describe('FontFetcher', () => {
     });
 
     it('should support URL object in main fetch', async () => {
-      const spy = vi.spyOn(fetcher, 'fetchFromUrl').mockResolvedValue({} as any);
+      const spy = vi
+        .spyOn(fetcher, 'fetchFromUrl')
+        .mockResolvedValue({} as unknown as Awaited<ReturnType<typeof fetcher.fetchFromUrl>>);
       await fetcher.fetch(new URL('https://example.com/font.ttf'));
       expect(spy).toHaveBeenCalled();
     });
@@ -85,7 +108,9 @@ describe('FontFetcher', () => {
       const spy = vi
         .spyOn(fetcher, 'fetchLocalFile')
         .mockResolvedValue({ buffer: Buffer.alloc(0), name: 'test', source: 'local', path: 'p' });
-      (fs.stat as any).mockResolvedValue({ isFile: () => true });
+      vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true } as unknown as Awaited<
+        ReturnType<typeof fs.stat>
+      >);
       await fetcher.fetch('./font.ttf');
       expect(spy).toHaveBeenCalledTimes(1);
     });
@@ -106,12 +131,12 @@ describe('FontFetcher', () => {
 
     it('should handle raw ArrayBuffer input', async () => {
       const arrayBuffer = new ArrayBuffer(10);
-      const result = await fetcher.fetch(arrayBuffer as any);
+      const result = await fetcher.fetch(arrayBuffer as unknown as FontSource);
       expect(Buffer.isBuffer(result.buffer)).toBe(true);
     });
 
     it('should throw for unknown types', async () => {
-      (fs.stat as any).mockRejectedValue(new Error('Unknown'));
+      vi.mocked(fs.stat).mockRejectedValue(new Error('Unknown'));
       await expect(fetcher.fetch('!!!')).rejects.toThrow('Unsupported font source type');
     });
   });
@@ -119,7 +144,7 @@ describe('FontFetcher', () => {
   describe('fetchGoogleFont', () => {
     it('should fetch and parse Google Fonts CSS', async () => {
       const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -129,12 +154,12 @@ describe('FontFetcher', () => {
       const result = await fetcher.fetchGoogleFont('Roboto');
       expect(result.name).toBe('Roboto');
       expect(result.source).toBe('google');
-      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it('should use style="italic" correctly', async () => {
       const mockCss = '@font-face { src: url("t.woff2") }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -145,7 +170,7 @@ describe('FontFetcher', () => {
     });
 
     it('should throw if font URL cannot be extracted', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: true,
         text: () => Promise.resolve('no url here'),
       });
@@ -153,30 +178,30 @@ describe('FontFetcher', () => {
     });
 
     it('should handle fetch errors', async () => {
-      (global.fetch as any).mockRejectedValue(new Error('Network error'));
+      mockFetch.mockRejectedValue(new Error('Network error'));
       await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow(
         'Failed to fetch Google Font',
       );
     });
 
     it('should handle non-Error catch in fetchGoogleFont', async () => {
-      (global.fetch as any).mockRejectedValueOnce('google-string-fail');
+      mockFetch.mockRejectedValueOnce('google-string-fail');
       await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('google-string-fail');
     });
 
     it('should return null if no font URLs can be parsed from CSS', () => {
-      const result = (fetcher as any).extractLatinFontUrl('@font-face { color: red; }', 'any');
+      const result = priv(fetcher).extractLatinFontUrl('@font-face { color: red; }', 'any');
       expect(result).toBeNull();
     });
 
     it('should return null if CSS contains no @font-face blocks', () => {
-      const result = (fetcher as any).extractLatinFontUrl('void', 'any');
+      const result = priv(fetcher).extractLatinFontUrl('void', 'any');
       expect(result).toBeNull();
     });
 
     it('should throw if font download fails with HTTP error', async () => {
       const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: false,
@@ -201,7 +226,7 @@ describe('FontFetcher', () => {
           unicode-range: U+0041;
         }
       `;
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -210,12 +235,11 @@ describe('FontFetcher', () => {
 
       const result = await fetcher.fetchGoogleFont('Roboto');
       expect(result.source).toBe('google');
-      // Should have picked the single U+0041 block
     });
 
     it('should test single non-latin unicode segment', async () => {
       const mockCss = '@font-face { src: url("t.woff2"); unicode-range: U+0042; }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -226,7 +250,7 @@ describe('FontFetcher', () => {
 
     it('should handle invalid unicode segments gracefully', async () => {
       const mockCss = '@font-face { src: url("t.woff2"); unicode-range: INVALID; }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -237,7 +261,7 @@ describe('FontFetcher', () => {
 
     it('should support "any" format in fetchGoogleFont', async () => {
       const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.ttf") }';
-      (global.fetch as any)
+      mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
           ok: true,
@@ -249,16 +273,15 @@ describe('FontFetcher', () => {
     });
 
     it('should fall back to raw parsed blocks if preferred format is missing', () => {
-      // Mocking extractLatinFontUrl with a mismatching format
       const mockCss = '@font-face { src: url("test.ttf") }';
-      const result = (fetcher as any).extractLatinFontUrl(mockCss, 'woff2');
+      const result = priv(fetcher).extractLatinFontUrl(mockCss, 'woff2');
       expect(result).toBe('test.ttf');
     });
   });
 
   describe('fetchFromUrl', () => {
     it('should fetch from URL and detect metadata', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: true,
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
       });
@@ -270,7 +293,7 @@ describe('FontFetcher', () => {
     });
 
     it('should support URL object as input in fetchFromUrl', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: true,
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
       });
@@ -279,7 +302,7 @@ describe('FontFetcher', () => {
     });
 
     it('should respect explicit name in fetchFromUrl', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: true,
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
       });
@@ -288,37 +311,40 @@ describe('FontFetcher', () => {
     });
 
     it('should fall back to unknown-font if name is not extracted', async () => {
-      (global.fetch as any).mockResolvedValue({
+      mockFetch.mockResolvedValue({
         ok: true,
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
       });
-      vi.spyOn(fetcher as any, 'extractFontNameFromUrl').mockReturnValue('');
+      vi.spyOn(
+        priv(fetcher) as unknown as { extractFontNameFromUrl(u: string): string },
+        'extractFontNameFromUrl',
+      ).mockReturnValue('');
       const result = await fetcher.fetchFromUrl('https://example.com/Font.ttf');
       expect(result.name).toBe('unknown-font');
     });
 
     it('should handle non-Error catch in fetchFromUrl', async () => {
-      (global.fetch as any).mockRejectedValueOnce('string-fail');
+      mockFetch.mockRejectedValueOnce('string-fail');
       await expect(fetcher.fetchFromUrl('https://ex.com')).rejects.toThrow('string-fail');
     });
 
     it('should handle unknown font format', async () => {
-      const result = (fetcher as any).detectFormatFromUrl('https://example.com/font.unknown');
+      const result = priv(fetcher).detectFormatFromUrl('https://example.com/font.unknown');
       expect(result).toBe('unknown');
     });
 
     it('should handle HTTP errors', async () => {
-      (global.fetch as any).mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' });
+      mockFetch.mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' });
       await expect(fetcher.fetchFromUrl('https://example.com/404.ttf')).rejects.toThrow('HTTP 404');
     });
 
     it('should handle URL parsing failure', async () => {
-      const result = (fetcher as any).extractFontNameFromUrl('not-a-url');
+      const result = priv(fetcher).extractFontNameFromUrl('not-a-url');
       expect(result).toBe('unknown-font');
     });
 
     it('should extract name from URL with query params', () => {
-      const result = (fetcher as any).extractFontNameFromUrl('https://ex.com/Font.ttf?v=1');
+      const result = priv(fetcher).extractFontNameFromUrl('https://ex.com/Font.ttf?v=1');
       expect(result).toBe('Font');
     });
   });
@@ -326,7 +352,7 @@ describe('FontFetcher', () => {
   describe('fetchLocalFile', () => {
     it('should read local file', async () => {
       const buffer = Buffer.from('test');
-      (fs.readFile as any).mockResolvedValue(buffer);
+      vi.mocked(fs.readFile).mockResolvedValue(buffer);
 
       const result = await fetcher.fetchLocalFile('test.ttf');
       expect(result.buffer.toString()).toBe(buffer.toString());
@@ -335,35 +361,33 @@ describe('FontFetcher', () => {
     });
 
     it('should handle read errors', async () => {
-      (fs.readFile as any).mockRejectedValue(new Error('File not found'));
+      vi.mocked(fs.readFile).mockRejectedValue(new Error('File not found'));
       await expect(fetcher.fetchLocalFile('missing.ttf')).rejects.toThrow(
         'Failed to read local font file',
       );
     });
 
     it('should handle non-Error catch in fetchLocalFile', async () => {
-      (fs.readFile as any).mockRejectedValueOnce('read-fail');
+      vi.mocked(fs.readFile).mockRejectedValueOnce('read-fail');
       await expect(fetcher.fetchLocalFile('fail.ttf')).rejects.toThrow('read-fail');
     });
   });
 
   describe('makeRequest', () => {
     it('should handle non-Error catch in makeRequest', async () => {
-      (global.fetch as any).mockRejectedValueOnce('raw-fail');
-      await expect((fetcher as any).makeRequest('https://ex.com')).rejects.toThrow('raw-fail');
+      mockFetch.mockRejectedValueOnce('raw-fail');
+      await expect(priv(fetcher).makeRequest('https://ex.com')).rejects.toThrow('raw-fail');
     });
 
     it('should handle timeout', async () => {
-      (global.fetch as any).mockImplementation(
+      mockFetch.mockImplementation(
         () =>
           new Promise((_, reject) => {
             setTimeout(() => reject(new Error('AbortError')), 200);
           }),
       );
 
-      await expect((fetcher as any).makeRequest('http://slow.com')).rejects.toThrow(
-        'Request failed',
-      );
+      await expect(priv(fetcher).makeRequest('http://slow.com')).rejects.toThrow('Request failed');
     });
   });
 });

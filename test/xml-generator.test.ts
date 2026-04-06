@@ -38,6 +38,8 @@ describe('XMLGenerator', () => {
     chars: [
       {
         id: 65,
+        index: 0,
+        char: 'A',
         x: 0,
         y: 0,
         width: 10,
@@ -61,7 +63,7 @@ describe('XMLGenerator', () => {
   });
 
   it('should handle optional and nullish fields for branch coverage', () => {
-    const minimalLayout: any = {
+    const minimalLayout = {
       ...mockLayout,
       info: {
         ...mockLayout.info,
@@ -71,27 +73,30 @@ describe('XMLGenerator', () => {
         outline: undefined,
       },
       pages: ['p0.png', 'p1.png'], // Trigger multi-page branch
-    };
+    } as unknown as MSDFLayout;
     const xml = XMLGenerator.generate(minimalLayout, 'min');
     expect(xml).toContain('charset=""');
     expect(xml).toContain('padding="0,0,0,0"');
     expect(xml).toContain('spacing="0,0"');
     expect(xml).toContain('outline="0"');
-    expect(xml).toContain('file="min-0.png"');
+    // Pages come directly from layout.pages, not constructed from the font name
+    expect(xml).toContain('file="p0.png"');
+    expect(xml).toContain('file="p1.png"');
   });
 
   it('should escape special characters in attributes', () => {
-    const layout: any = {
+    const layout = {
       ...mockLayout,
       info: { ...mockLayout.info, face: 'Font & "Special"' },
-    };
+    } as MSDFLayout;
     const xml = XMLGenerator.generate(layout, 'test');
     expect(xml).toContain('face="Font &amp; &quot;Special&quot;"');
   });
 
   it('should handle null/undefined in escapeAttr', () => {
-    // Accessing private static via cast for branch coverage
-    const escapeAttr = (XMLGenerator as any).escapeAttr;
+    // Access private static method for branch coverage
+    type EscapeAttrFn = { escapeAttr(v: string | number | null | undefined): string };
+    const escapeAttr = (XMLGenerator as unknown as EscapeAttrFn).escapeAttr;
     expect(escapeAttr(null)).toBe('');
     expect(escapeAttr(undefined)).toBe('');
     expect(escapeAttr('<')).toBe('&lt;');

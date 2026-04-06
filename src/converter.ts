@@ -37,17 +37,23 @@ class MSDFConverter {
     fontName: string,
     options: GenerateOptions = {},
   ): Promise<MSDFSuccess | MSDFFailure> {
-    const charset = options.charset || this.options.charset;
-    const fontSize = options.fontSize || this.options.fontSize;
-    const textureSize = options.textureSize || this.options.textureSize;
-    const fieldRange = options.fieldRange || this.options.fieldRange;
+    // Use ?? so explicit falsy values (e.g. fontSize: 0, charset: '') are respected
+    const charset = options.charset ?? this.options.charset;
+    const fontSize = options.fontSize ?? this.options.fontSize;
+    const textureSize = options.textureSize ?? this.options.textureSize;
+    const fieldRange = options.fieldRange ?? this.options.fieldRange;
+    const timeoutMs = options.generationTimeout ?? this.options.generationTimeout ?? 60_000;
 
     const hasProgress = !!options.onProgress;
     if (hasProgress) {
       options.onProgress?.(0, 0, 1);
     }
 
-    return new Promise((resolve) => {
+    return new Promise<MSDFSuccess | MSDFFailure>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`msdf-bmfont-xml timed out after ${timeoutMs}ms for "${fontName}"`));
+      }, timeoutMs);
+
       const config = {
         outputType: 'json' as const,
         filename: fontName,
@@ -64,6 +70,7 @@ class MSDFConverter {
       };
 
       generateBmFont(fontBuffer, config, (error, textures, fontResult) => {
+        clearTimeout(timer);
         if (error) {
           return resolve(this.handleGenError(error, fontName) as MSDFFailure);
         }

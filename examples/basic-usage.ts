@@ -18,7 +18,7 @@ async function basicExample() {
     // You can generate MSDF directly from a Google Font name.
     // The fetcher handles CSS parsing and font file retrieval automatically.
     console.log('\n1️⃣  Generating from Google Font (Roboto):');
-    const googleResult = await generator.generateFromGoogle('Roboto', {
+    const googleResult = await generator.generate('Roboto', {
       weight: '400',
       charset: 'alphanumeric', // Use the built-in alphanumeric preset
       fontSize: 64,
@@ -32,7 +32,7 @@ async function basicExample() {
     // --- Example 2: Remote URL ---
     // You can also use a direct link to any .ttf, .otf, .woff, or .woff2 file.
     console.log('\n2️⃣  Generating from Remote URL:');
-    const urlResult = await generator.generateFromUrl(
+    const urlResult = await generator.generate(
       'https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf',
       {
         name: 'Roboto-URL', // Custom name for the output files

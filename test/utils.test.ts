@@ -1,7 +1,13 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MSDFResult } from '../src/types.js';
+import type {
+  MSDFCachedSuccess,
+  MSDFFailure,
+  MSDFLayout,
+  MSDFSuccess,
+  OutputFormat,
+} from '../src/types.js';
 import MSDFUtils from '../src/utils.js';
 
 vi.mock('node:fs', () => ({
@@ -57,13 +63,12 @@ describe('MSDFUtils', () => {
     });
 
     it('should resolve charsets correctly', () => {
-      // @ts-expect-error
       const resolve = MSDFUtils.resolveCharset;
       expect(resolve(undefined)).toBe(MSDFUtils.getAlphanumericCharset());
       expect(resolve(['a', 'b'])).toBe('ab');
       expect(resolve('ascii')).toBe(MSDFUtils.getASCIICharset());
       expect(resolve('custom-raw')).toBe('custom-raw');
-      expect(resolve('custom')).toBe(''); // presets.custom('') => ''
+      expect(() => resolve('custom')).toThrow('"custom" is a charset provider');
     });
   });
 
@@ -96,7 +101,9 @@ describe('MSDFUtils', () => {
   describe('validateFontBuffer', () => {
     it('should throw on empty buffer', () => {
       expect(() => MSDFUtils.validateFontBuffer(Buffer.alloc(0))).toThrow('Font buffer is empty');
-      expect(() => MSDFUtils.validateFontBuffer(null as any)).toThrow('Font buffer is empty');
+      expect(() => MSDFUtils.validateFontBuffer(null as unknown as Buffer)).toThrow(
+        'Font buffer is empty',
+      );
     });
 
     it('should warn on invalid signature but return true', () => {
@@ -121,11 +128,11 @@ describe('MSDFUtils', () => {
   });
 
   describe('saveMSDFOutput', () => {
-    const mockResult: MSDFResult = {
+    const mockResult: MSDFSuccess = {
       success: true,
       fontName: 'TestFont',
-      data: { pages: [], chars: [], info: {}, common: {} } as any,
-      metadata: {} as any,
+      data: { pages: [], chars: [], info: {}, common: {} } as unknown as MSDFLayout,
+      metadata: {} as unknown as MSDFSuccess['metadata'],
       atlases: [],
     };
 
@@ -161,7 +168,7 @@ describe('MSDFUtils', () => {
     });
 
     it('should use default filename if fontName is missing', async () => {
-      const resultNoName = { ...mockResult, fontName: undefined } as any;
+      const resultNoName = { ...mockResult, fontName: undefined } as unknown as MSDFSuccess;
       await MSDFUtils.saveMSDFOutput(resultNoName, './out');
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.stringContaining(path.join(path.resolve('./out'), 'msdf-font.json')),
@@ -170,7 +177,7 @@ describe('MSDFUtils', () => {
     });
 
     it('should write atlases/textures', async () => {
-      const resultWithAtlas: any = {
+      const resultWithAtlas: MSDFSuccess = {
         ...mockResult,
         atlases: [{ filename: 'atlas.png', texture: Buffer.from('tex') }],
       };
@@ -182,7 +189,7 @@ describe('MSDFUtils', () => {
     });
 
     it('should write XML when present', async () => {
-      const resultWithXml: any = {
+      const resultWithXml: MSDFSuccess = {
         ...mockResult,
         xml: '<fnt></fnt>',
       };
@@ -194,7 +201,11 @@ describe('MSDFUtils', () => {
     });
 
     it('should NOT write XML if missing from result despite format being fnt', async () => {
-      const resultNoXml: any = { success: true, fontName: 'Test', xml: undefined };
+      const resultNoXml = {
+        success: true,
+        fontName: 'Test',
+        xml: undefined,
+      } as unknown as MSDFSuccess;
       const paths = await MSDFUtils.saveMSDFOutput(resultNoXml, './out', { format: 'fnt' });
       // It always writes metadata, so paths should contain only the metadata file
       expect(paths).toHaveLength(1);
@@ -206,7 +217,12 @@ describe('MSDFUtils', () => {
     });
 
     it('should write XML for all relevant formats', async () => {
-      const resultWithXml: any = { success: true, fontName: 'T', xml: '<x></x>', metadata: {} };
+      const resultWithXml = {
+        success: true,
+        fontName: 'T',
+        xml: '<x></x>',
+        metadata: {},
+      } as unknown as MSDFSuccess;
       await MSDFUtils.saveMSDFOutput(resultWithXml, './out', { format: 'both' });
       await MSDFUtils.saveMSDFOutput(resultWithXml, './out', { format: 'all' });
       // Verify XML was written at least once
@@ -214,10 +230,16 @@ describe('MSDFUtils', () => {
     });
 
     it('should return empty array for failed or cached results', async () => {
-      expect(await MSDFUtils.saveMSDFOutput({ success: false } as any, './out')).toEqual([]);
-      expect(
-        await MSDFUtils.saveMSDFOutput({ success: true, cached: true } as any, './out'),
-      ).toEqual([]);
+      const failed = { success: false, fontName: '', error: '' } as MSDFFailure;
+      const cached = {
+        success: true,
+        cached: true,
+        fontName: '',
+        metadata: {} as unknown as MSDFCachedSuccess['metadata'],
+        savedFiles: [],
+      } as MSDFCachedSuccess;
+      expect(await MSDFUtils.saveMSDFOutput(failed, './out')).toEqual([]);
+      expect(await MSDFUtils.saveMSDFOutput(cached, './out')).toEqual([]);
     });
   });
 
@@ -275,7 +297,11 @@ describe('MSDFUtils', () => {
     });
 
     it('should return expected files list (other/binary)', () => {
-      const files = MSDFUtils.getExpectedFiles('./out', 'font', 'binary' as any);
+      const files = MSDFUtils.getExpectedFiles(
+        './out',
+        'font',
+        'binary' as unknown as OutputFormat,
+      );
       const resolvedOut = path.resolve('./out');
       expect(files).not.toContain(path.join(resolvedOut, 'font.json'));
       expect(files).toContain(path.join(resolvedOut, 'font-meta.json'));

@@ -22,10 +22,10 @@ export class XMLGenerator {
    * Generates a standard BMFont XML string from layout data.
    *
    * @param layout   - The MSDF layout returned by MSDFConverter.
-   * @param fontName - The base identity string (used as the page filename stem).
+   * @param _fontName - Unused. Page filenames are taken directly from {@link MSDFLayout.pages}.
    * @returns AngelCode-compliant XML string.
    */
-  public static generate(layout: MSDFLayout, fontName: string): string {
+  public static generate(layout: MSDFLayout, _fontName: string): string {
     const { info, common, chars, kernings, distanceField } = layout;
     const esc = XMLGenerator.escapeAttr;
 
@@ -63,9 +63,8 @@ export class XMLGenerator {
         `blueChnl="${esc(common.blueChnl)}"/>`,
       ].join(' '),
       '  <pages>',
-      ...layout.pages.map((_: string, index: number) => {
-        const pageName = layout.pages.length > 1 ? `${fontName}-${index}.png` : `${fontName}.png`;
-        return `    <page id="${index}" file="${esc(pageName)}"/>`;
+      ...layout.pages.map((pageFile: string, index: number) => {
+        return `    <page id="${index}" file="${esc(pageFile)}"/>`;
       }),
       '  </pages>',
       `  <distanceField fieldType="${esc(distanceField.fieldType)}" distanceRange="${esc(distanceField.distanceRange)}"/>`,

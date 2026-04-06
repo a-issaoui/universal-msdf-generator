@@ -11,7 +11,7 @@ async function advancedExample() {
     console.log('1. Generating with custom charset:');
     const customCharset = 'Hello World 123!@#$%^&*()';
 
-    const _result1 = await generator.generateFromGoogle('Inter', {
+    const _result1 = await generator.generate('Inter', {
       charset: customCharset,
       fontSize: 72,
       fieldRange: 8,
@@ -22,7 +22,7 @@ async function advancedExample() {
 
     // Example 2: High-quality settings
     console.log('\n2. Generating high-quality MSDF:');
-    const _result2 = await generator.generateFromGoogle('Arvo', {
+    const _result2 = await generator.generate('Arvo', {
       fontSize: 96,
       textureSize: [2048, 2048],
       fieldRange: 6,

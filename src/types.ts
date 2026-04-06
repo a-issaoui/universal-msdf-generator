@@ -141,6 +141,10 @@ export interface GenerateOptions {
   verbose?: boolean;
   /** Progress callback handler */
   onProgress?: (progress: number, completed: number, total: number) => void;
+  /** Max ms to wait for msdf-bmfont-xml before rejecting. Default: 60000. */
+  generationTimeout?: number;
+  /** Max concurrent fonts when using generateMultiple. Default: unlimited. */
+  concurrency?: number;
 }
 
 /**

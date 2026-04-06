@@ -28,7 +28,7 @@ jobs:
       run: npm ci
 
     - name: Security audit
-      run: npm run audit || true # Note: audit might fail due to advisory level, we log it for now
+      run: npm audit --audit-level=moderate
  
     - name: Lint check (Biome)
       run: npm run check

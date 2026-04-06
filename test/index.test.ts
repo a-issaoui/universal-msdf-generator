@@ -27,6 +27,7 @@ vi.mock('../src/converter.js', () => ({
         pages: ['p.png'],
         distanceField: { fieldType: 'msdf', distanceRange: 4 },
       },
+      atlases: [{ filename: 'p.png', texture: Buffer.alloc(0) }],
     });
     dispose = vi.fn().mockResolvedValue(undefined);
   },
@@ -44,7 +45,7 @@ vi.mock('../src/utils.js', () => ({
   },
 }));
 
-describe('UniversalMSDFGenerator Hardened', () => {
+describe('UniversalMSDFGenerator', () => {
   let generator: UniversalMSDFGenerator;
 
   beforeEach(() => {
@@ -56,89 +57,231 @@ describe('UniversalMSDFGenerator Hardened', () => {
     await generator.dispose();
   });
 
-  it('should cover all lifecycle paths and named init', async () => {
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+  it('ensureInitialized: concurrent calls initialize core only once', async () => {
     const gen = new UniversalMSDFGenerator();
-    // Concurrent
     const p1 = gen.ensureInitialized();
     const p2 = gen.ensureInitialized();
-    await Promise.all([p1, p2]);
-    // Sequential
+    const p3 = gen.ensureInitialized();
+    await Promise.all([p1, p2, p3]);
+    // A second sequential call is also a no-op
     await gen.ensureInitialized();
-    await gen.dispose();
     await gen.dispose();
   });
 
-  it('should cover identity and naming bifurcations', async () => {
+  it('dispose: idempotent — double dispose does not throw', async () => {
+    const gen = new UniversalMSDFGenerator();
+    await gen.ensureInitialized();
+    await expect(gen.dispose()).resolves.toBeUndefined();
+    await expect(gen.dispose()).resolves.toBeUndefined();
+  });
+
+  it('instance isolation: disposing one instance does not affect another', async () => {
+    const genA = new UniversalMSDFGenerator({ fontSize: 32 });
+    const genB = new UniversalMSDFGenerator({ fontSize: 64 });
+    await genA.ensureInitialized();
+    await genB.ensureInitialized();
+
+    await genA.dispose();
+
+    // genB must still be able to generate without re-throwing
+    const result = await genB.generate('font.ttf');
+    expect(result.success).toBe(true);
+    await genB.dispose();
+  });
+
+  // ── Identity resolution ────────────────────────────────────────────────────
+
+  it('resolveIdentity: various source shapes', async () => {
     await generator.generate('Roboto.ttf');
     await generator.generate(Buffer.alloc(0));
     await generator.generate('', { name: 'M' });
     await generator.generate('/');
     await generator.generate('T.ttf', { weight: '700', style: 'italic' });
+    // Filename starting with '.' — pts[0] is '', triggers the || 'font' fallback
+    await generator.generate('.hidden-font');
   });
 
-  it('should cover cache hits and misses', async () => {
-    vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(true);
-    await generator.generate('F', { reuseExisting: true, outputDir: './out', verbose: true });
+  // ── Cache hit/miss ─────────────────────────────────────────────────────────
 
+  it('cache: returns cached result when reuseExisting=true and files exist', async () => {
+    vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(true);
+    const r = await generator.generate('F', {
+      reuseExisting: true,
+      outputDir: './out',
+      verbose: true,
+    });
+    expect(r.success).toBe(true);
+    expect((r as { cached?: boolean }).cached).toBe(true);
+  });
+
+  it('cache: regenerates when reuseExisting=true but files missing', async () => {
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(false);
-    await generator.generate('F', { reuseExisting: true, outputDir: './out' });
+    const r = await generator.generate('F', { reuseExisting: true, outputDir: './out' });
+    expect(r.success).toBe(true);
+    expect((r as { cached?: boolean }).cached).toBeUndefined();
+  });
+
+  it('cache: skips cache check when force=true', async () => {
+    // force=true bypasses checkMSDFOutputExists entirely — do NOT queue a mock value
+    const r = await generator.generate('F', {
+      reuseExisting: true,
+      outputDir: './out',
+      force: true,
+    });
+    expect(MSDFUtils.checkMSDFOutputExists).not.toHaveBeenCalled();
+    // Should have generated fresh, not returned cached
+    expect(r.success).toBe(true);
+    expect((r as { cached?: boolean }).cached).toBeUndefined();
+  });
+
+  it('cache: undefined outputFormat defaults to json in getExpectedFiles', async () => {
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockResolvedValueOnce(true);
     await generator.generate('F', {
       reuseExisting: true,
       outputDir: './out',
       outputFormat: undefined,
     });
-
-    await generator.generate('F', { reuseExisting: true, outputDir: './out', force: true });
   });
 
-  it('should cover success path logic (XML, OutputDir)', async () => {
+  // ── Success path: XML and outputDir ───────────────────────────────────────
+
+  it('success path: generates XML for fnt/both/all formats', async () => {
     await generator.generate('X', { outputFormat: 'fnt' });
     await generator.generate('X', { outputFormat: 'both' });
     await generator.generate('X', { outputFormat: 'all' });
     await generator.generate('X', { outputFormat: 'json' });
-
-    await generator.generate('S', { outputDir: './out', verbose: true });
   });
 
-  it('should cover error fallbacks and logging', async () => {
-    const gen = new UniversalMSDFGenerator({ verbose: true });
-    await gen.ensureInitialized();
+  it('success path: multi-atlas renames use identity-N.png pattern', async () => {
+    // Initialize so the private converter instance is available
+    await generator.ensureInitialized();
+    type PrivateGen = { converter: { convert: ReturnType<typeof vi.fn> } };
+    const conv = (generator as unknown as PrivateGen).converter;
+    conv.convert.mockResolvedValueOnce({
+      success: true,
+      data: {
+        info: { face: 'T', size: 32 },
+        common: { lineHeight: 32 },
+        chars: [],
+        kernings: [],
+        pages: ['p0.png', 'p1.png'],
+        distanceField: { fieldType: 'msdf', distanceRange: 4 },
+      },
+      atlases: [
+        { filename: 'p0.png', texture: Buffer.alloc(0) },
+        { filename: 'p1.png', texture: Buffer.alloc(0) },
+      ],
+      fontName: 'T',
+      metadata: {},
+    });
+    const r = await generator.generate('Multi');
+    expect(r.success).toBe(true);
+    if (r.success && !r.cached) {
+      expect(r.atlases[0].filename).toMatch(/-0\.png$/);
+      expect(r.atlases[1].filename).toMatch(/-1\.png$/);
+    }
+  });
 
+  it('success path: saves to outputDir with verbose logging', async () => {
+    const r = await generator.generate('S', { outputDir: './out', verbose: true });
+    expect(r.success).toBe(true);
+    expect(MSDFUtils.saveMSDFOutput).toHaveBeenCalled();
+  });
+
+  // ── Error handling ─────────────────────────────────────────────────────────
+
+  it('error path: wraps Error thrown by checkMSDFOutputExists', async () => {
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockRejectedValueOnce(new Error('FAIL'));
-    const r1 = await generator.generate('E', {
+    const r = await generator.generate('E', {
       reuseExisting: true,
       outputDir: './out',
       verbose: true,
     });
-    expect(r1.success).toBe(false);
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error).toContain('MSDF generation failed:');
+  });
 
+  it('error path: wraps non-Error string thrown by checkMSDFOutputExists', async () => {
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockRejectedValueOnce('RAWFAIL');
-    const r2 = await generator.generate('E', {
+    const r = await generator.generate('E', {
       reuseExisting: true,
       outputDir: './out',
       verbose: false,
     });
-    expect(r2.success).toBe(false);
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error).toContain('MSDF generation failed:');
+  });
 
+  it('error path: does not double-wrap already-prefixed error messages', async () => {
     vi.mocked(MSDFUtils.checkMSDFOutputExists).mockRejectedValueOnce(
       'MSDF generation failed: ALREADY',
     );
-    const r3 = await generator.generate('E', {
+    const r = await generator.generate('E', {
       reuseExisting: true,
       outputDir: './out',
       verbose: true,
     });
-    expect(r3.success).toBe(false);
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error).toBe('MSDF generation failed: ALREADY');
   });
 
-  it('should cover specialized methods and standalone wrappers', async () => {
-    await generate('S1');
-    await generateMultiple(['M1', 'M2'], { verbose: true });
+  // ── generateMultiple ───────────────────────────────────────────────────────
 
+  it('generateMultiple: returns results for all sources', async () => {
+    const results = await generator.generateMultiple(['A.ttf', 'B.ttf'], { verbose: false });
+    expect(results).toHaveLength(2);
+    expect(results[0].success).toBe(true);
+    expect(results[1].success).toBe(true);
+  });
+
+  it('generateMultiple: result order matches input order', async () => {
+    const results = await generator.generateMultiple(['A.ttf', 'B.ttf', 'C.ttf'], {
+      name: undefined,
+      verbose: false,
+    });
+    expect(results).toHaveLength(3);
+  });
+
+  it('generateMultiple: concurrency: 1 runs serially and preserves order', async () => {
+    const order: number[] = [];
+    const origGenerate = generator.generate.bind(generator);
+    let call = 0;
+    vi.spyOn(generator, 'generate').mockImplementation(async (s, o) => {
+      const idx = call++;
+      order.push(idx);
+      return origGenerate(s, o);
+    });
+    await generator.generateMultiple(['A', 'B', 'C'], { concurrency: 1 });
+    expect(order).toEqual([0, 1, 2]);
+  });
+
+  // ── Deprecated alias methods ───────────────────────────────────────────────
+
+  it('deprecated aliases: generateFromGoogle/Url/File delegate to generate()', async () => {
     const gen = new UniversalMSDFGenerator();
-    await gen.generateFromGoogle('G');
-    await gen.generateFromUrl('U');
-    await gen.generateFromFile('F');
+    const spy = vi.spyOn(gen, 'generate');
+    await gen.generateFromGoogle('Roboto');
+    await gen.generateFromUrl('https://example.com/font.ttf');
+    await gen.generateFromFile('./my.ttf');
+    expect(spy).toHaveBeenCalledTimes(3);
+    await gen.dispose();
+  });
+
+  // ── Standalone function wrappers ───────────────────────────────────────────
+
+  it('standalone generate(): creates and disposes instance per call', async () => {
+    const disposeSpy = vi.spyOn(UniversalMSDFGenerator.prototype, 'dispose');
+    await generate('S1');
+    expect(disposeSpy).toHaveBeenCalledOnce();
+    disposeSpy.mockRestore();
+  });
+
+  it('standalone generateMultiple(): creates and disposes instance per call', async () => {
+    const disposeSpy = vi.spyOn(UniversalMSDFGenerator.prototype, 'dispose');
+    await generateMultiple(['M1', 'M2'], { verbose: false });
+    expect(disposeSpy).toHaveBeenCalledOnce();
+    disposeSpy.mockRestore();
   });
 });

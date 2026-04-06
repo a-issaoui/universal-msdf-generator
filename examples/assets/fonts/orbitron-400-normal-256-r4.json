@@ -1885,7 +1885,7 @@
       "amount": -5
     }
   ],
-  "pages": ["Orbitron.png"],
+  "pages": ["orbitron-400-normal-256-r4.png"],
   "distanceField": {
     "fieldType": "msdf",
     "distanceRange": 4,

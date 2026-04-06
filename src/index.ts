@@ -4,33 +4,6 @@ import type { FontSource, GenerateOptions, MSDFCachedSuccess, MSDFResult } from 
 import MSDFUtils from './utils.js';
 import XMLGenerator from './xml-generator.js';
 
-let sharedConverter: MSDFConverter | null = null;
-let sharedFetcher: MSDFFetcher | null = null;
-let initPromise: Promise<void> | null = null;
-
-async function innerInit(options: GenerateOptions) {
-  sharedFetcher = new MSDFFetcher();
-  sharedConverter = new MSDFConverter(options);
-  await sharedConverter.initialize();
-}
-
-async function getCoreInstance(
-  options: GenerateOptions,
-): Promise<{ converter: MSDFConverter; fetcher: MSDFFetcher }> {
-  /* v8 ignore next 6 */
-  if (!sharedConverter || !sharedFetcher) {
-    if (!initPromise) {
-      initPromise = innerInit(options);
-    }
-    await initPromise;
-  }
-  /* v8 ignore next 4 */
-  if (!sharedConverter || !sharedFetcher) {
-    throw new Error('Failed to initialize Universal MSDF Generator core.');
-  }
-  return { converter: sharedConverter, fetcher: sharedFetcher };
-}
-
 function resolveIdentity(source: FontSource, options: GenerateOptions): string {
   if (options.name) return options.name;
   const isS = typeof source === 'string';
@@ -39,7 +12,6 @@ function resolveIdentity(source: FontSource, options: GenerateOptions): string {
     rawP = (source as string).split('/').pop() || 'font';
   }
   const pts = rawP.split('.');
-  /* v8 ignore next 1 */
   const n = pts[0] || 'font';
   const slug = n
     .toLowerCase()
@@ -62,7 +34,6 @@ async function tryGetCached(
   const exists = await MSDFUtils.checkMSDFOutputExists(oDir, identity, {
     format: options.outputFormat,
   });
-  /* v8 ignore next 13 */
   if (exists) {
     if (options.verbose) console.log(`✨ Re-using MSDF: ${identity}`);
     return {
@@ -92,9 +63,21 @@ async function executeGen(
 ): Promise<MSDFResult> {
   const font = await fetcher.fetch(source);
   const result = await converter.convert(font.buffer, font.name, options);
-  /* v8 ignore next 13 */
   if (result.success) {
     result.fontName = identity;
+
+    // Renormalize atlas filenames and layout pages to use identity as the base.
+    // The converter names atlases after font.name (e.g. "Roboto"); we need them
+    // to match the JSON/FNT filename (identity) so all files share a consistent stem.
+    result.atlases = result.atlases.map((atlas, i) => ({
+      ...atlas,
+      filename: result.atlases.length > 1 ? `${identity}-${i}.png` : `${identity}.png`,
+    }));
+    result.data = {
+      ...result.data,
+      pages: result.atlases.map((a) => a.filename),
+    };
+
     const fmt = options.outputFormat;
     let needsXml = false;
     if (fmt === 'fnt' || fmt === 'both' || fmt === 'all') needsXml = true;
@@ -111,28 +94,14 @@ async function executeGen(
 }
 
 /**
- * Universal MSDF Generator (Functional Core)
+ * Universal MSDF Generator
  */
-async function perform(source: FontSource, options: GenerateOptions): Promise<MSDFResult> {
-  const { converter, fetcher } = await getCoreInstance(options);
-  try {
-    const identity = resolveIdentity(source, options);
-    if (options.outputDir) {
-      const cached = await tryGetCached(options.outputDir, identity, options);
-      if (cached) return cached;
-    }
-    return await executeGen(source, identity, options, converter, fetcher);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const err = msg.startsWith('MSDF generation failed:') ? msg : `MSDF generation failed: ${msg}`;
-    /* v8 ignore next 1 */
-    if (options.verbose) console.error(`💥 ${err}`);
-    return { success: false, fontName: String(source), error: err };
-  }
-}
-
 class UniversalMSDFGenerator {
   private options: GenerateOptions;
+  private converter: MSDFConverter | null = null;
+  private fetcher: MSDFFetcher | null = null;
+  private initPromise: Promise<void> | null = null;
+
   constructor(options?: GenerateOptions) {
     this.options = {
       fontSize: 48,
@@ -142,46 +111,110 @@ class UniversalMSDFGenerator {
       ...(options || {}),
     };
   }
+
+  private async ensureCore(): Promise<{ converter: MSDFConverter; fetcher: MSDFFetcher }> {
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        this.fetcher = new MSDFFetcher();
+        this.converter = new MSDFConverter(this.options);
+        await this.converter.initialize();
+      })();
+    }
+    await this.initPromise;
+    // TypeScript cannot see that initPromise sets these fields, so assert via cast
+    const converter = this.converter as MSDFConverter;
+    const fetcher = this.fetcher as MSDFFetcher;
+    return { converter, fetcher };
+  }
+
   async ensureInitialized() {
-    await getCoreInstance(this.options);
+    await this.ensureCore();
   }
+
+  private async _perform(source: FontSource, options: GenerateOptions): Promise<MSDFResult> {
+    const { converter, fetcher } = await this.ensureCore();
+    try {
+      const identity = resolveIdentity(source, options);
+      if (options.outputDir) {
+        const cached = await tryGetCached(options.outputDir, identity, options);
+        if (cached) return cached;
+      }
+      return await executeGen(source, identity, options, converter, fetcher);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const err = msg.startsWith('MSDF generation failed:')
+        ? msg
+        : `MSDF generation failed: ${msg}`;
+      if (options.verbose) console.error(`💥 ${err}`);
+      return { success: false, fontName: String(source), error: err };
+    }
+  }
+
   async generate(s: FontSource, o?: GenerateOptions) {
-    return perform(s, { ...this.options, ...(o || {}) });
+    return this._perform(s, { ...this.options, ...(o || {}) });
   }
-  /* v8 ignore start */
-  async generateMultiple(sources: FontSource[], options?: GenerateOptions) {
-    const results = [];
-    for (const src of sources) results.push(await this.generate(src, options));
+
+  async generateMultiple(sources: FontSource[], options?: GenerateOptions): Promise<MSDFResult[]> {
+    const limit = options?.concurrency ?? Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(limit) || limit >= sources.length) {
+      return Promise.all(sources.map((src) => this.generate(src, options)));
+    }
+    // Concurrency-limited pool — preserves result order
+    const results: MSDFResult[] = new Array(sources.length);
+    let idx = 0;
+    const workers = Array.from({ length: limit }, async () => {
+      while (idx < sources.length) {
+        const i = idx++;
+        results[i] = await this.generate(sources[i], options);
+      }
+    });
+    await Promise.all(workers);
     return results;
   }
+
+  /** @deprecated Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromGoogle(n: string, o?: GenerateOptions) {
     return this.generate(n, o);
   }
+
+  /** @deprecated Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromUrl(u: string, o?: GenerateOptions) {
     return this.generate(u, o);
   }
+
+  /** @deprecated Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromFile(f: string, o?: GenerateOptions) {
     return this.generate(f, o);
   }
+
   async dispose() {
-    if (initPromise) await initPromise.catch(() => {});
-    if (sharedConverter) {
-      await sharedConverter.dispose();
-      sharedConverter = null;
-      sharedFetcher = null;
-      initPromise = null;
+    if (this.initPromise) await this.initPromise.catch(() => {});
+    if (this.converter) {
+      await this.converter.dispose();
     }
+    this.converter = null;
+    this.fetcher = null;
+    this.initPromise = null;
   }
-  /* v8 ignore stop */
 }
 
-/* v8 ignore start */
-const generate = (s: FontSource, o?: GenerateOptions) =>
-  new UniversalMSDFGenerator().generate(s, o);
-const generateMultiple = (s: FontSource[], o?: GenerateOptions) =>
-  new UniversalMSDFGenerator().generateMultiple(s, o);
+const generate = async (s: FontSource, o?: GenerateOptions): Promise<MSDFResult> => {
+  const gen = new UniversalMSDFGenerator(o);
+  try {
+    return await gen.generate(s, o);
+  } finally {
+    await gen.dispose();
+  }
+};
 
-/* v8 ignore stop */
+const generateMultiple = async (s: FontSource[], o?: GenerateOptions): Promise<MSDFResult[]> => {
+  const gen = new UniversalMSDFGenerator(o);
+  try {
+    return await gen.generateMultiple(s, o);
+  } finally {
+    await gen.dispose();
+  }
+};
 
 export { generate, generateMultiple, MSDFUtils, UniversalMSDFGenerator };
 export default UniversalMSDFGenerator;

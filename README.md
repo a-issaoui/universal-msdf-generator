@@ -3,13 +3,13 @@
 [![NPM Version](https://img.shields.io/npm/v/@a-issaoui/universal-msdf-generator.svg)](https://www.npmjs.com/package/@a-issaoui/universal-msdf-generator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript 6.0](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
-[![Node.js 25](https://img.shields.io/badge/Node.js-25-green)](https://nodejs.org/)
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org/)
 [![NPM Downloads](https://img.shields.io/npm/dm/@a-issaoui/universal-msdf-generator.svg)](https://www.npmjs.com/package/@a-issaoui/universal-msdf-generator)
 
-The **Universal MSDF Generator** is an enterprise-grade orchestration engine for creating Multi-channel Signed Distance Field typographic assets. Built for **Node.js 18+**, it leverages **Native C++ bindings via N-API** to provide sub-millisecond generation speeds and production-grade stability.
+The **Universal MSDF Generator** is an enterprise-grade orchestration engine for creating Multi-channel Signed Distance Field typographic assets. Built for **Node.js 18+**, it leverages **WebAssembly** (via `msdf-bmfont-xml`) to provide fast generation speeds and production-grade stability.
 
 ## 🚀 Key Features
-- **High-Performance Rendering**: Leverages native C++ code for industry-leading speed.
+- **High-Performance Rendering**: Leverages WebAssembly for fast, cross-platform MSDF conversion.
 - **AngelCode Compliance**: Generates standard `.fnt` and `.png` assets compatible with PixiJS v8.
 - **Hyper-Range Stability**: Support for massive 32px distance fields for razor-sharp edges.
 - **Universal Fetching**: Download directly from Google Fonts, remote URLs, or local files.
@@ -37,7 +37,7 @@ Want to see the quality in action? We've provided a **PixiJS Infinity Zoom** dem
    ```bash
    node examples/serve.js
    ```
-2. **Open the link**: [http://localhost:3000/](http://localhost:3000/)
+2. **Open the link**: [http://localhost:3003/](http://localhost:3003/)
 3. **Explore**: Zoom deep into the font's edges and witness the zero-pixelation advantage of MSDF.
 
 ---
@@ -69,7 +69,7 @@ npx universal-msdf "Roboto" --force
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--out`, `-o` | Output directory | Current Dir |
-| `--charset`, `-c` | Character set (ascii, alphanumeric, or custom) | `ascii` |
+| `--charset`, `-c` | Preset name (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or a literal character string | `ascii` |
 | `--reuse` | Enable "Smart Re-use" to skip existing files | `true` |
 | `--force`, `-f` | Disable "Smart Re-use" and force generation | `false` |
 | `--verbose`, `-v` | Enable detailed processing logs | `true` |
@@ -96,24 +96,44 @@ if (result.success) {
 ```
 
 ### Batch Processing
-Efficiently process an entire font library in a single call.
+Efficiently process an entire font library in a single call. Runs in parallel by default; use `concurrency` to cap simultaneous jobs.
 
 ```typescript
 import { generateMultiple } from '@a-issaoui/universal-msdf-generator';
 
 const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
   outputDir: './assets',
-  charset: 'ascii'
+  charset: 'ascii',
+  concurrency: 2, // optional: max parallel generations
 });
 ```
+
+### Generation Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `outputDir` | `string` | — | Directory to save output files |
+| `outputFormat` | `'json' \| 'fnt' \| 'both' \| 'all'` | `'json'` | Which layout file(s) to write |
+| `charset` | `string \| string[]` | `'alphanumeric'` | Preset name or literal character string |
+| `fontSize` | `number` | `48` | Glyph rasterization size in pixels |
+| `fieldRange` | `number` | `4` | SDF distance range in pixels |
+| `textureSize` | `[number, number]` | auto | Atlas texture dimensions |
+| `weight` | `string` | `'400'` | Font weight (used in output filename) |
+| `style` | `string` | `'normal'` | Font style (used in output filename) |
+| `name` | `string` | derived | Override the output filename stem |
+| `reuseExisting` | `boolean` | `false` | Skip generation if output files already exist |
+| `force` | `boolean` | `false` | Regenerate even when `reuseExisting` is set |
+| `concurrency` | `number` | unlimited | Max parallel fonts in `generateMultiple` |
+| `generationTimeout` | `number` | `60000` | Max ms before a generation attempt times out |
+| `verbose` | `boolean` | `true` | Log progress to stdout |
 
 ---
 
 ## 🏅 Technical Excellence
 
 - **100% Code Coverage**: Every single branch and line is rigorously tested.
-- **Wasm Powered**: Leveraging the speed of C++ via WebAssembly for sub-millisecond conversion.
-- **Node.js 25 Optimized**: Fully compatible with the latest modern runtimes.
+- **Wasm Powered**: Leveraging WebAssembly for fast, cross-platform MSDF conversion.
+- **Node.js 18+ Compatible**: Tested on Node.js 18, 20, and 22.
 - **Dual Build**: Ships with both **ESM** and **CJS** support.
 
 ---

@@ -65,7 +65,12 @@ function resolveCharset(charset: string | string[] | undefined): string {
   const presets = getCharsets();
   if (charset in presets) {
     const entry = presets[charset];
-    return typeof entry === 'function' ? entry('').join('') : entry;
+    if (typeof entry === 'function') {
+      throw new Error(
+        `"custom" is a charset provider, not a preset name. Pass characters directly as a string, e.g. charset: "ABC123".`,
+      );
+    }
+    return entry;
   }
 
   // Raw string — use as-is
@@ -281,8 +286,9 @@ function createProgressCallback(
  *
  * @deprecated The generator uses the native `smart-size` + `pot` options from
  * msdf-bmfont-xml which produce better results. This helper is retained only
- * for external callers that may depend on it; it will be removed in a future
- * major version.
+ * for external callers that may depend on it.
+ * @since 1.0.0
+ * Will be removed in v2.0.0.
  */
 function calculateOptimalTextureSize(charCount: number, fontSize: number): [number, number] {
   const area = charCount * (fontSize * fontSize) * 1.2;
