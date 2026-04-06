@@ -173,6 +173,7 @@ class MSDFConverter {
     const fieldRange = options.fieldRange ?? this.options.fieldRange;
     const edgeColoring = options.edgeColoring ?? this.options.edgeColoring ?? 'simple';
     const padding = options.padding ?? this.options.padding ?? 2;
+    const fixOverlaps = options.fixOverlaps ?? this.options.fixOverlaps ?? true;
     const timeoutMs = options.generationTimeout ?? this.options.generationTimeout ?? 60_000;
 
     const hasProgress = !!options.onProgress;
@@ -201,7 +202,7 @@ class MSDFConverter {
         ];
 
         if (codepoints.length > 0) {
-          gen.loadGlyphs(codepoints, { preprocess: true });
+          gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });
         }
 
         // Atlas dimensions

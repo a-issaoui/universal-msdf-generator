@@ -240,6 +240,27 @@ describe('MSDFConverter', () => {
     });
   });
 
+  // ── fixOverlaps ────────────────────────────────────────────────────────────
+
+  describe('convert: fixOverlaps', () => {
+    it('defaults to preprocess: true when fixOverlaps is not set', async () => {
+      await converter.convert(makeBuf(), 'F');
+      expect(mockGen.loadGlyphs).toHaveBeenCalledWith(expect.any(Array), { preprocess: true });
+    });
+
+    it('passes preprocess: false when fixOverlaps is false', async () => {
+      await converter.convert(makeBuf(), 'F', { fixOverlaps: false });
+      expect(mockGen.loadGlyphs).toHaveBeenCalledWith(expect.any(Array), { preprocess: false });
+    });
+
+    it('inherits fixOverlaps: false from constructor options', async () => {
+      const c = new MSDFConverter({ fixOverlaps: false });
+      MsdfgenMock.create.mockResolvedValue(mockGen);
+      await c.convert(makeBuf(), 'F');
+      expect(mockGen.loadGlyphs).toHaveBeenCalledWith(expect.any(Array), { preprocess: false });
+    });
+  });
+
   // ── Error handling ─────────────────────────────────────────────────────────
 
   describe('convert: error handling', () => {

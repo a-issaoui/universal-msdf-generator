@@ -23,7 +23,6 @@ export default defineConfig({
         'vitest.config.ts',
         'tsup.config.ts',
         'src/types.ts',
-        'src/cli.ts',
         'scripts/**',
       ],
     },

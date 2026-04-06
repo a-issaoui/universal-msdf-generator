@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { generate } from './index.js';
+import { fileURLToPath } from 'node:url';
+import { generate, generateMultiple } from './index.js';
 
 function showHelp() {
   console.log(`
@@ -7,6 +8,7 @@ function showHelp() {
 
   Usage:
     $ universal-msdf <source> [options]
+    $ universal-msdf <source1> <source2> ... [options]   (batch)
 
   Sources:
     - Google Font name (e.g. "Roboto")
@@ -14,23 +16,31 @@ function showHelp() {
     - Local file path   (e.g. "./fonts/myfont.otf")
 
   Options:
-    --out, -o      Output directory (default: ./output)
-    --charset, -c  Charset preset or custom string (default: alphanumeric)
-                   Presets: ascii, alphanumeric, latin, cyrillic
-    --size, -s     Font size (default: 48)
-    --range, -r    Distance field range (default: 4)
-    --format       Output format: json | fnt | both | all (default: json)
-    --reuse        Skip if output already exists (default: true)
-    --no-reuse     Always re-generate, do not skip existing files
-    --force, -f    Force re-generation even if output exists (overrides --reuse)
-    --verbose, -v  Enable verbose logging (default: true)
-    --quiet, -q    Suppress all non-error output
+    --out, -o          Output directory (default: ./output)
+    --charset, -c      Charset preset or custom string (default: alphanumeric)
+                       Presets: ascii, alphanumeric, latin, cyrillic
+    --size, -s         Font size (default: 48)
+    --range, -r        Distance field range in px (default: 4)
+    --format           Output format: json | fnt | both | all (default: json)
+    --weight, -w       Font weight, e.g. 400, 700, bold (default: 400)
+    --style            Font style, e.g. normal, italic (default: normal)
+    --name, -n         Override output filename stem
+    --edge-coloring    Edge coloring algorithm: simple | inktrap | distance (default: simple)
+    --padding          Glyph padding in atlas in px (default: 2)
+    --concurrency      Max parallel fonts in batch mode (default: unlimited)
+    --reuse            Skip if output already exists (default: true)
+    --no-reuse         Always re-generate, do not skip existing files
+    --force, -f        Force re-generation even if output exists (overrides --reuse)
+    --verbose, -v      Enable verbose logging (default: true)
+    --quiet, -q        Suppress all non-error output
 
   Examples:
     $ universal-msdf Roboto -c ascii -o ./assets
     $ universal-msdf https://example.com/font.ttf --size 64
     $ universal-msdf ./my-font.otf --force
-    $ universal-msdf "Open Sans" -c latin --format both
+    $ universal-msdf "Open Sans" -c latin --format both --weight 400
+    $ universal-msdf Roboto "Open Sans" Lato --concurrency 2
+    $ universal-msdf Roboto --edge-coloring inktrap --padding 4
   `);
 }
 
@@ -40,27 +50,39 @@ interface CliOptions {
   fontSize: number;
   fieldRange: number;
   outputFormat: 'json' | 'fnt' | 'both' | 'all';
+  weight: string;
+  style: string;
+  name: string | undefined;
+  edgeColoring: 'simple' | 'inktrap' | 'distance';
+  padding: number;
+  concurrency: number | undefined;
   reuseExisting: boolean;
   force: boolean;
   verbose: boolean;
 }
 
-function parseArgs(args: string[]): CliOptions {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: CLI arg parser — switch-per-flag is intentional
+export function parseArgs(args: string[]): { sources: string[]; options: CliOptions } {
   const options: CliOptions = {
     outputDir: './output',
     charset: 'alphanumeric',
     fontSize: 48,
     fieldRange: 4,
     outputFormat: 'json',
-    // reuseExisting and force are separate flags with clear semantics:
-    //   reuseExisting=true  → skip if files exist (default)
-    //   force=true          → always regenerate, overrides reuseExisting
+    weight: '400',
+    style: 'normal',
+    name: undefined,
+    edgeColoring: 'simple',
+    padding: 2,
+    concurrency: undefined,
     reuseExisting: true,
     force: false,
     verbose: true,
   };
 
-  for (let i = 1; i < args.length; i++) {
+  const sources: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     switch (arg) {
       case '--out':
@@ -108,6 +130,53 @@ function parseArgs(args: string[]): CliOptions {
         break;
       }
 
+      case '--weight':
+      case '-w':
+        options.weight = args[++i];
+        break;
+
+      case '--style':
+        options.style = args[++i];
+        break;
+
+      case '--name':
+      case '-n':
+        options.name = args[++i];
+        break;
+
+      case '--edge-coloring': {
+        const val = args[++i];
+        const valid = ['simple', 'inktrap', 'distance'] as const;
+        if (!valid.includes(val as (typeof valid)[number])) {
+          console.error(
+            `💥 Error: --edge-coloring must be one of: ${valid.join(', ')} (got "${val}")`,
+          );
+          process.exit(1);
+        }
+        options.edgeColoring = val as CliOptions['edgeColoring'];
+        break;
+      }
+
+      case '--padding': {
+        const val = parseInt(args[++i], 10);
+        if (Number.isNaN(val) || val < 0) {
+          console.error(`💥 Error: --padding must be a non-negative number (got "${args[i]}")`);
+          process.exit(1);
+        }
+        options.padding = val;
+        break;
+      }
+
+      case '--concurrency': {
+        const val = parseInt(args[++i], 10);
+        if (Number.isNaN(val) || val < 1) {
+          console.error(`💥 Error: --concurrency must be a positive number (got "${args[i]}")`);
+          process.exit(1);
+        }
+        options.concurrency = val;
+        break;
+      }
+
       case '--verbose':
       case '-v':
         options.verbose = true;
@@ -120,8 +189,6 @@ function parseArgs(args: string[]): CliOptions {
 
       case '--force':
       case '-f':
-        // force=true makes the generator ignore existing files entirely.
-        // We also set reuseExisting=false so checkCache returns null immediately.
         options.force = true;
         options.reuseExisting = false;
         break;
@@ -140,13 +207,15 @@ function parseArgs(args: string[]): CliOptions {
           console.error(`💥 Unknown option: ${arg}. Run with --help to see available options.`);
           process.exit(1);
         }
+        sources.push(arg);
     }
   }
 
-  return options;
+  return { sources, options };
 }
 
-async function run() {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: CLI run — branching on result types is intentional
+export async function run() {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
@@ -154,26 +223,49 @@ async function run() {
     process.exit(0);
   }
 
-  const source = args[0];
-  const options = parseArgs(args);
+  const { sources, options } = parseArgs(args);
+
+  if (sources.length === 0) {
+    console.error('💥 Error: No font source provided. Run with --help to see usage.');
+    process.exit(1);
+  }
 
   try {
     if (options.verbose) {
       console.log('🚀 Initializing Universal MSDF Generator...');
     }
 
-    const result = await generate(source, options);
-
-    if (result.success) {
-      console.log('\n🛡️  MSDF generation successful!');
-      if (result.savedFiles && result.savedFiles.length > 0) {
-        for (const file of result.savedFiles) {
-          console.log(`  - ${file}`);
+    if (sources.length === 1) {
+      const result = await generate(sources[0], options);
+      if (result.success) {
+        console.log('\n🛡️  MSDF generation successful!');
+        if (result.savedFiles && result.savedFiles.length > 0) {
+          for (const file of result.savedFiles) {
+            console.log(`  - ${file}`);
+          }
         }
+      } else {
+        console.error(`\n💥 MSDF generation failed: ${result.error}`);
+        process.exit(1);
       }
     } else {
-      console.error(`\n💥 MSDF generation failed: ${result.error}`);
-      process.exit(1);
+      // Batch mode: multiple sources
+      const results = await generateMultiple(sources, options);
+      let failed = 0;
+      for (const result of results) {
+        if (result.success) {
+          console.log(`\n✅ ${result.fontName}`);
+          if (result.savedFiles && result.savedFiles.length > 0) {
+            for (const file of result.savedFiles) {
+              console.log(`  - ${file}`);
+            }
+          }
+        } else {
+          console.error(`\n💥 ${result.fontName}: ${result.error}`);
+          failed++;
+        }
+      }
+      if (failed > 0) process.exit(1);
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -182,4 +274,7 @@ async function run() {
   }
 }
 
-run();
+/* v8 ignore next 3 — entry-point guard, not reachable when imported for testing */
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  run();
+}
