@@ -69,7 +69,7 @@ npx universal-msdf "Roboto" --force
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--out`, `-o` | Output directory | Current Dir |
-| `--charset`, `-c` | Preset name (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or a literal character string | `ascii` |
+| `--charset`, `-c` | Preset name (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or a literal character string | `alphanumeric` |
 | `--reuse` | Enable "Smart Re-use" to skip existing files | `true` |
 | `--force`, `-f` | Disable "Smart Re-use" and force generation | `false` |
 | `--verbose`, `-v` | Enable detailed processing logs | `true` |

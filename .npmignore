@@ -1,37 +1,4 @@
-# Source and Build
-node_modules/
+# Source maps add ~160 KB to the package with no consumer benefit.
+# Everything outside dist/ is already excluded by package.json "files": ["dist"].
 dist/*.map
-*.tsbuildinfo
-
-# Configuration
-.github/
-.husky/
-.vscode/
-.antigravity/
-.npmrc
-.editorconfig
-.prettierrc*
-.eslintrc*
-biome.json
-tsconfig.json
-tsconfig.*.json
-tsup.config.ts
-vitest.config.ts
-
-# Documentation and Meta
-examples/
-test/
-coverage/
-CONTRIBUTING.md
-CODE_OF_CONDUCT.md
-SECURITY.md
-implementation_plan.md
-task.md
-walkthrough.md
-
-# Logs and OS files
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.DS_Store
-Thumbs.db
+dist/**/*.map

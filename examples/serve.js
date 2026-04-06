@@ -127,7 +127,7 @@ const server = createServer(async (req, res) => {
        * 2. Reduces response from ~5MB to ~500 bytes
        * 3. Client only needs fontName to construct URLs
        */
-      const { data: _data, textures: _tex, ...clientSafeResult } = result;
+      const { data: _data, atlases: _atlases, ...clientSafeResult } = result;
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(clientSafeResult));
