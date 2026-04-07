@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { URL } from 'node:url';
@@ -57,14 +58,37 @@ const FONT_SIGNATURES: Record<string, { magic: Buffer; offset?: number }> = {
 export interface SecureFetchOptions extends FetchOptions {
   /** Base directory for local file resolution. When set, all local paths are relative to this. */
   basePath?: string;
+  /**
+   * Allow absolute paths when `basePath` is not set.
+   * @default false
+   * @security Only enable if you trust all callers to supply safe paths.
+   */
+  allowAbsolutePaths?: boolean;
+  /**
+   * Allow `..` traversal sequences when `basePath` is not set.
+   * @default false
+   * @security Only enable if you trust all callers to supply safe paths.
+   */
+  allowPathTraversal?: boolean;
   /** Maximum download size in bytes. Default: 20 MB. */
   maxDownloadSize?: number;
   /** Retry attempts for transient network failures. Default: 3. */
   maxRetries?: number;
   /** Shared cache map for request deduplication across instances. */
   cache?: Map<string, Promise<FontData>>;
-  /** Custom DNS resolver for DNS-rebinding protection (not yet used internally). */
+  /**
+   * Custom DNS resolver for DNS-rebinding / SSRF protection.
+   * Called before every URL fetch. Returning a private IP causes the request to be blocked.
+   * Defaults to `node:dns/promises lookup`.
+   */
   dnsResolver?: (hostname: string) => Promise<string>;
+  /**
+   * Enable SSRF protection (blocks private IPs, localhost, etc.).
+   * @default true
+   */
+  enforceSafeUrls?: boolean;
+  /** Enable detailed logging. Default: true. */
+  verbose?: boolean;
 }
 
 interface ParsedFontBlock {
@@ -82,6 +106,54 @@ function isPrivateHostname(hostname: string): boolean {
   return PRIVATE_IP_PATTERNS.some((p) => p.test(hostname));
 }
 
+async function defaultDnsResolver(hostname: string): Promise<string> {
+  const result = await dnsLookup(hostname);
+  return result.address;
+}
+
+// ============================================================================
+// Rate Limiter (token bucket)
+// ============================================================================
+
+/**
+ * Simple token-bucket rate limiter.
+ * Used to throttle Google Fonts CSS endpoint requests.
+ */
+export class RateLimiter {
+  private tokens: number;
+  private lastRefill = Date.now();
+
+  constructor(
+    private readonly max: number,
+    private readonly windowMs: number,
+  ) {
+    this.tokens = max;
+  }
+
+  async acquire(): Promise<void> {
+    this.refill();
+    if (this.tokens >= 1) {
+      this.tokens--;
+      return;
+    }
+    const waitMs = Math.ceil((1 - this.tokens) / (this.max / this.windowMs));
+    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+    return this.acquire();
+  }
+
+  private refill(): void {
+    const now = Date.now();
+    this.tokens = Math.min(
+      this.max,
+      this.tokens + ((now - this.lastRefill) * this.max) / this.windowMs,
+    );
+    this.lastRefill = now;
+  }
+}
+
+/** Module-level rate limiter for Google Fonts CSS endpoint (10 req/s). */
+const googleFontsRateLimiter = new RateLimiter(10, 1000);
+
 function generateCacheKey(source: FontSource, options?: GoogleFontOptions): string {
   const hash = createHash('sha256');
   if (typeof source === 'string') {
@@ -97,7 +169,30 @@ function generateCacheKey(source: FontSource, options?: GoogleFontOptions): stri
     hash.update('ab:').update(Buffer.from(source));
   }
   if (options) hash.update(JSON.stringify(options));
-  return hash.digest('hex').slice(0, 16);
+  return hash.digest('hex').slice(0, 32);
+}
+
+/**
+ * Best-effort buffer protection in development. Prevents common accidental mutations
+ * (via .write(), .fill(), or .set()) but cannot intercept direct index assignment
+ * (buffer[i] = x). For guaranteed isolation, use Buffer.from(result.buffer) to
+ * create a private copy.
+ */
+function protectBuffer(buffer: Buffer): Buffer {
+  // In non-production environments, we protect the buffer by overriding its
+  // mutating methods to prevent accidental corruption of the cache.
+  // Note: Object.freeze(buffer) throws for Buffers/TypedArrays with elements.
+  if (process.env.NODE_ENV !== 'production') {
+    const throwErr = () => {
+      throw new Error('Cannot mutate cached font buffer. Use Buffer.from() to copy first.');
+    };
+    Object.defineProperties(buffer, {
+      write: { value: throwErr, enumerable: false, configurable: true },
+      fill: { value: throwErr, enumerable: false, configurable: true },
+      set: { value: throwErr, enumerable: false, configurable: true },
+    });
+  }
+  return buffer;
 }
 
 // ============================================================================
@@ -126,12 +221,28 @@ export class FontFetcher {
 
   constructor(options: SecureFetchOptions = {}) {
     this.options = {
-      timeout: DEFAULT_TIMEOUT,
-      userAgent: 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
-      maxDownloadSize: MAX_DOWNLOAD_SIZE,
-      maxRetries: DEFAULT_MAX_RETRIES,
-      ...options,
+      timeout: options.timeout ?? DEFAULT_TIMEOUT,
+      userAgent:
+        options.userAgent ?? 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
+      maxDownloadSize: options.maxDownloadSize ?? MAX_DOWNLOAD_SIZE,
+      maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+      basePath: options.basePath,
+      allowAbsolutePaths: options.allowAbsolutePaths,
+      allowPathTraversal: options.allowPathTraversal,
+      signal: options.signal,
+      cache: options.cache,
+      enforceSafeUrls: options.enforceSafeUrls ?? true,
+      dnsResolver: options.dnsResolver,
+      verbose: options.verbose ?? true,
     };
+
+    if (this.options.basePath) {
+      if (!path.isAbsolute(this.options.basePath)) {
+        throw new Error(`basePath must be an absolute path: "${this.options.basePath}"`);
+      }
+      this.options.basePath = path.normalize(this.options.basePath);
+    }
+
     this.requestCache = options.cache ?? new Map();
     this.activeRequests = new Map();
   }
@@ -144,11 +255,18 @@ export class FontFetcher {
    * Primary entry point for fetching font data.
    * Detects source type automatically and caches results for deduplication.
    */
+  /**
+   * Primary entry point for fetching font data.
+   * Detects source type automatically and caches results for deduplication.
+   *
+   * Note: callers MUST NOT mutate the returned `buffer` — it may be shared across
+   * cache hits. Use `Buffer.from(result.buffer)` to get a private copy when needed.
+   */
   async fetch(source: FontSource, googleOptions?: GoogleFontOptions): Promise<FontData> {
     const cacheKey = generateCacheKey(source, googleOptions);
 
     const cached = this.requestCache.get(cacheKey);
-    if (cached) return cached.then((d) => this.cloneFontData(d));
+    if (cached) return cached;
 
     const controller = new AbortController();
     this.activeRequests.set(cacheKey, controller);
@@ -158,7 +276,7 @@ export class FontFetcher {
     });
 
     this.requestCache.set(cacheKey, promise);
-    return promise.then((d) => this.cloneFontData(d));
+    return promise;
   }
 
   /** Cancel an in-flight request started via fetch(). Returns true if cancelled. */
@@ -287,7 +405,12 @@ export class FontFetcher {
       buffer = Buffer.from(source as ArrayBuffer);
     }
     const detectedFormat = this.detectFormatFromBuffer(buffer);
-    return { buffer, name: 'buffer-font', format: detectedFormat ?? undefined, source: 'buffer' };
+    return {
+      buffer: protectBuffer(buffer),
+      name: 'buffer-font',
+      format: detectedFormat ?? undefined,
+      source: 'buffer',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -297,15 +420,18 @@ export class FontFetcher {
   async fetchGoogleFont(fontName: string, options: GoogleFontOptions = {}): Promise<FontData> {
     const { weight = '400', style = 'normal' } = options;
 
+    // Rate-limit calls to the Google Fonts CSS endpoint
+    await googleFontsRateLimiter.acquire();
+
     const ital = style === 'italic' ? '1' : '0';
     const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
       fontName,
     )}:ital,wght@${ital},${weight}&display=swap`;
 
-    // UA → expected format pairs, in priority order.
-    // IE 11 UA → WOFF; Android 2.2 UA → TTF (fallback for WOFF2-only fonts like Playwrite);
-    // Generic UA → any format as last resort.
-    const attempts: Array<{ ua: string; format: 'woff' | 'ttf' | 'any' }> = [
+    // UA → expected format pairs. Default order: WOFF first (smaller), TTF second, any last.
+    // When preferTTF is set (i.e. saveFontFile: true), TTF is tried first so the
+    // saved binary can be used for future local MSDF regeneration without re-downloading.
+    const baseAttempts: Array<{ ua: string; format: 'woff' | 'ttf' | 'any' }> = [
       {
         ua: 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
         format: 'woff',
@@ -316,6 +442,9 @@ export class FontFetcher {
       },
       { ua: 'Mozilla/5.0 (compatible; FontBot/1.0)', format: 'any' },
     ];
+    const attempts = options.preferTTF
+      ? [baseAttempts[1], baseAttempts[0], baseAttempts[2]]
+      : baseAttempts;
 
     const errors: Array<{ format: string; error: string }> = [];
 
@@ -368,7 +497,7 @@ export class FontFetcher {
 
     const detectedFormat = this.detectFormatFromBuffer(buffer);
     return {
-      buffer,
+      buffer: protectBuffer(buffer),
       name: fontName,
       weight,
       style,
@@ -469,7 +598,7 @@ export class FontFetcher {
     options: { format?: string; name?: string } = {},
   ): Promise<FontData> {
     const urlObj = url instanceof URL ? url : new URL(url);
-    this.validateUrlSecurity(urlObj);
+    await this.validateUrlSecurity(urlObj);
 
     const urlStr = urlObj.href;
     const format = options.format ?? this.detectFormatFromUrl(urlStr);
@@ -480,7 +609,7 @@ export class FontFetcher {
 
     const detectedFormat = this.detectFormatFromBuffer(buffer);
     return {
-      buffer,
+      buffer: protectBuffer(buffer),
       name: name || 'unknown-font',
       format: detectedFormat ?? format,
       source: 'url',
@@ -537,7 +666,7 @@ export class FontFetcher {
     const claimedFormat = options.format ?? path.extname(resolvedPath).slice(1).toLowerCase();
 
     return {
-      buffer,
+      buffer: protectBuffer(buffer),
       name: options.name ?? path.basename(resolvedPath, path.extname(resolvedPath)),
       format: detectedFormat ?? claimedFormat,
       source: 'local',
@@ -556,7 +685,7 @@ export class FontFetcher {
     const maxRetries = this.options.maxRetries as number;
     let lastError: Error | undefined;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await this.makeRequest(url, options);
       } catch (err) {
@@ -568,6 +697,7 @@ export class FontFetcher {
           lastError.message.includes('traversal') ||
           lastError.message.includes('too large') ||
           lastError.message.includes('not allowed') ||
+          lastError.message.includes('DNS resolution failed') ||
           lastError.message.includes('HTTP 4') // 4xx client errors
         ) {
           throw lastError;
@@ -579,13 +709,18 @@ export class FontFetcher {
       }
     }
 
-    throw new Error(`Failed after ${maxRetries} attempts: ${lastError?.message}`);
+    throw new Error(
+      `Failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
+    );
   }
 
   private async makeRequest(
     url: string,
     options: { userAgent?: string; signal?: AbortSignal } = {},
   ): Promise<Response> {
+    // DNS-level SSRF check: resolve the hostname and verify it is not a private address
+    await this.validateUrlSecurityAsync(new URL(url));
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.options.timeout as number);
 
@@ -601,6 +736,11 @@ export class FontFetcher {
 
     let response: Response;
     try {
+      if (this.options.verbose) {
+        console.log(`[FontFetcher] Fetching: ${url}`);
+        console.log(`[FontFetcher] UA: ${options.userAgent ?? (this.options.userAgent as string)}`);
+      }
+
       response = await fetch(url, {
         signal: controller.signal,
         headers: {
@@ -612,7 +752,7 @@ export class FontFetcher {
     } catch (err) {
       clearTimeout(timeout);
       if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error(`Request timed out or aborted: ${url}`);
+        throw new Error(`Request timed out (${this.options.timeout}ms) or aborted: ${url}`);
       }
       throw err;
     }
@@ -705,6 +845,26 @@ export class FontFetcher {
     }
   }
 
+  /**
+   * Async URL security check that resolves the hostname via DNS and blocks
+   * requests whose resolved IP falls in a private/loopback range.
+   * Called in makeRequest() before every network fetch.
+   */
+  private async validateUrlSecurityAsync(url: URL): Promise<void> {
+    const resolver = this.options.dnsResolver ?? defaultDnsResolver;
+    let resolvedIp: string;
+    try {
+      resolvedIp = await resolver(url.hostname);
+    } catch {
+      throw new Error(`DNS resolution failed for "${url.hostname}"`);
+    }
+    if (isPrivateHostname(resolvedIp)) {
+      throw new Error(
+        `Resolved IP "${resolvedIp}" for "${url.hostname}" is blocked (private/internal address)`,
+      );
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Format detection & validation
   // -------------------------------------------------------------------------
@@ -767,10 +927,6 @@ export class FontFetcher {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private cloneFontData(data: FontData): FontData {
-    return { ...data, buffer: Buffer.from(data.buffer) };
   }
 }
 

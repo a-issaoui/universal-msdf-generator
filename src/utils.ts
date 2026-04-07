@@ -1,124 +1,23 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { MSDFResult, OutputFormat } from './types.js';
-
-/**
- * Utility functions for charset management and file persistence.
- * All methods are module-level functions exposed as static members of MSDFUtils
- * for backwards-compatibility with callers that reference them via the class.
- */
+import type { MSDFLayout, MSDFResult, MSDFSuccess, OutputFormat } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Charset helpers
+// File System Utils
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a map of built-in charset names to their expanded character strings.
- * The `custom` entry accepts a string and returns its individual characters.
- */
-function getCharsets(): Record<string, string | ((chars: string) => string[])> {
-  return {
-    ascii: getASCIICharset(),
-    alphanumeric: getAlphanumericCharset(),
-    latin: getLatinCharset(),
-    cyrillic: getCyrillicCharset(),
-    custom: (chars: string) => chars.split(''),
-  };
-}
-
-/** Standard printable ASCII characters (codepoints 32–126). */
-function getASCIICharset(): string {
-  const chars: string[] = [];
-  for (let i = 32; i < 127; i++) {
-    chars.push(String.fromCharCode(i));
-  }
-  return chars.join('');
-}
-
-/** Basic alphanumeric set: A–Z, a–z, 0–9. */
-function getAlphanumericCharset(): string {
-  return 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-}
-
-/** Extended Latin set: ASCII + common accented letters. */
-function getLatinCharset(): string {
-  return `${getASCIICharset()}ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ`;
-}
-
-/** Standard Cyrillic character set. */
-function getCyrillicCharset(): string {
-  return 'АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя';
-}
-
-/**
- * Resolves a charset option (preset name, raw string, or array) to its final character string.
- *
- * This is the single authority for charset resolution — the generator and the CLI
- * both funnel through here so that `-c ascii` produces the full 95-character ASCII
- * set rather than the literal four characters "a", "s", "c", "i".
- */
-function resolveCharset(charset: string | string[] | undefined): string {
-  if (!charset) return getAlphanumericCharset();
-
-  if (Array.isArray(charset)) return charset.join('');
-
-  const presets = getCharsets();
-  if (charset in presets) {
-    const entry = presets[charset];
-    if (typeof entry === 'function') {
-      throw new Error(
-        `"custom" is a charset provider, not a preset name. Pass characters directly as a string, e.g. charset: "ABC123".`,
-      );
-    }
-    return entry;
-  }
-
-  // Raw string — use as-is
-  return charset;
-}
-
-// ---------------------------------------------------------------------------
-// File-system helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Performs basic validation on a font buffer signature.
- * @throws Error if the buffer is empty.
- * @returns true when the buffer looks like a known font format.
+ * Validates a font buffer by checking magic bytes.
  */
 function validateFontBuffer(buffer: Buffer): boolean {
-  if (!buffer || buffer.length === 0) {
-    throw new Error('Font buffer is empty');
-  }
-
-  const signature = buffer.subarray(0, 4).toString('hex');
-  const validSignatures = [
-    '00010000', // TrueType
-    '4f54544f', // OpenType (OTTO)
-    '774f4632', // WOFF2
-    '774f4646', // WOFF
-  ];
-
-  if (!validSignatures.some((sig) => signature.startsWith(sig))) {
-    console.warn('Font buffer signature might not be valid. Expected TTF/OTF/WOFF/WOFF2 format.');
-  }
-
-  return true;
+  if (!buffer || buffer.length < 4) return false;
+  const magic = buffer.toString('hex', 0, 4);
+  // TrueType (00010000), OpenType (4f54544f), WOFF (774f4646), WOFF2 (774f4632)
+  return ['00010000', '4f54544f', '774f4646', '774f4632'].includes(magic);
 }
 
 /**
- * Persists MSDF generation results to the local filesystem.
- *
- * PNG atlases are ALWAYS written to disk so that the saved JSON layout file can
- * reference them by filename (e.g. "font.png") rather than embedding raw base64.
- * Embedding base64 in JSON would make the file ~33% larger and incompatible with
- * standard loaders such as PixiJS and Three.js that resolve page filenames relative
- * to the JSON path.
- *
- * @param result    - The in-memory generation result from MSDFConverter.
- * @param outputDir - Target directory.
- * @param options   - Naming and format overrides.
- * @returns Absolute paths of every written file.
+ * Saves MSDF generation results to the specified directory.
  */
 async function saveMSDFOutput(
   result: MSDFResult,
@@ -126,105 +25,117 @@ async function saveMSDFOutput(
   options: { filename?: string; format?: OutputFormat } = {},
 ): Promise<string[]> {
   if (!result.success || result.cached) return [];
+  const res = result as MSDFSuccess;
 
   const dir = path.resolve(outputDir);
-  const filename = options.filename || result.fontName || 'msdf-font';
-  const format: OutputFormat = options.format ?? 'json';
-
   await fs.mkdir(dir, { recursive: true });
+
+  const filename = options.filename || res.fontName || 'font';
+  const format = options.format || 'json';
 
   const outputs: string[] = [];
 
-  // Write files based on the requested format and results
-  await writeTextures(result, dir, outputs);
+  // 1. Save Textures
+  const texturePaths = await writeTextures(res, dir, filename);
+  outputs.push(...texturePaths);
 
-  await writeJsonLayout(result, dir, filename, format, outputs);
-  await writeXmlLayout(result, dir, filename, format, outputs);
-  await writeMetadata(result, dir, filename, outputs);
+  // 2. Save JSON Layout
+  if (format === 'json' || format === 'both' || format === 'all') {
+    const jsonPath = await writeJsonLayout(res.data, dir, filename);
+    outputs.push(jsonPath);
+  }
+
+  // 3. Save XML (FNT) Layout
+  if (res.xml && (format === 'fnt' || format === 'both' || format === 'all')) {
+    const fntPath = await writeXmlLayout(res.xml, dir, filename);
+    outputs.push(fntPath);
+  }
+
+  // 4. Save Metadata Sidecar (for smart re-use)
+  const metaPath = await writeMetadata(res, dir, filename);
+  outputs.push(metaPath);
 
   return outputs;
 }
 
-/**
- * Persists PNG atlas files to disk.
- * Always writes PNGs regardless of format so that JSON page references resolve correctly.
- */
 async function writeTextures(
-  result: import('./types.js').MSDFSuccess,
-  dir: string,
-  outputs: string[],
-): Promise<void> {
-  if (!result.atlases || result.atlases.length === 0) return;
-
-  for (const atlas of result.atlases) {
-    const texPath = path.join(dir, atlas.filename);
-    await fs.writeFile(texPath, atlas.texture);
-    outputs.push(texPath);
-  }
-}
-
-/**
- * Persists the JSON layout file to disk.
- */
-async function writeJsonLayout(
-  result: import('./types.js').MSDFSuccess,
+  result: MSDFSuccess,
   dir: string,
   filename: string,
-  format: OutputFormat,
-  outputs: string[],
-): Promise<void> {
-  if (format === 'json' || format === 'both' || format === 'all') {
-    const jsonPath = path.join(dir, `${filename}.json`);
-    await fs.writeFile(jsonPath, JSON.stringify(result.data, null, 2));
-    outputs.push(jsonPath);
+): Promise<string[]> {
+  if (!result.atlases || result.atlases.length === 0) return [];
+  const paths: string[] = [];
+
+  for (let i = 0; i < result.atlases.length; i++) {
+    const atlas = result.atlases[i];
+    const name = result.atlases.length > 1 ? `${filename}-${i}.png` : `${filename}.png`;
+    const p = path.join(dir, name);
+    await fs.writeFile(p, atlas.texture);
+    paths.push(p);
   }
+  return paths;
 }
 
-/**
- * Persists the AngelCode XML (.fnt) layout file to disk.
- */
-async function writeXmlLayout(
-  result: import('./types.js').MSDFSuccess,
-  dir: string,
-  filename: string,
-  format: OutputFormat,
-  outputs: string[],
-): Promise<void> {
-  if (result.xml && (format === 'fnt' || format === 'both' || format === 'all')) {
-    const fntPath = path.join(dir, `${filename}.fnt`);
-    await fs.writeFile(fntPath, result.xml);
-    outputs.push(fntPath);
-  }
+async function writeJsonLayout(data: MSDFLayout, dir: string, filename: string): Promise<string> {
+  const p = path.join(dir, `${filename}.json`);
+  await fs.writeFile(p, JSON.stringify(data, null, 2));
+  return p;
 }
 
-/**
- * Persists the metadata sidecar file to disk.
- */
-async function writeMetadata(
-  result: import('./types.js').MSDFSuccess,
-  dir: string,
-  filename: string,
-  outputs: string[],
-): Promise<void> {
-  const metaPath = path.join(dir, `${filename}-meta.json`);
-  await fs.writeFile(metaPath, JSON.stringify(result.metadata, null, 2));
-  outputs.push(metaPath);
+async function writeXmlLayout(xml: string, dir: string, filename: string): Promise<string> {
+  const p = path.join(dir, `${filename}.fnt`);
+  await fs.writeFile(p, xml);
+  return p;
 }
 
-/**
- * Checks whether MSDF assets for a given identity already exist on disk.
- */
+async function writeMetadata(result: MSDFSuccess, dir: string, filename: string): Promise<string> {
+  const p = path.join(dir, `${filename}-meta.json`);
+  const meta = {
+    ...result.metadata,
+    atlasCount: result.atlases.length,
+    version: '1.0',
+    generatedAt: new Date().toISOString(),
+  };
+  await fs.writeFile(p, JSON.stringify(meta, null, 2));
+  return p;
+}
+
 async function checkMSDFOutputExists(
   outputDir: string,
   identity: string,
-  options: { format?: OutputFormat } = {},
+  options: { format?: OutputFormat; verbose?: boolean } = {},
 ): Promise<boolean> {
-  const files = getExpectedFiles(outputDir, identity, options.format ?? 'json');
+  const meta = await loadMetadata(outputDir, identity);
+  if (!meta || meta.version !== '1.0') return false;
+
+  const atlasCount = meta.atlasCount || 1;
+  const files = getExpectedFiles(outputDir, identity, options.format ?? 'json', atlasCount);
+
+  // Integrity check: Ensure all files exist synchronously-ish
+  const results = await Promise.allSettled(files.map((f) => fs.access(f)));
+  const allExist = results.every((r) => r.status === 'fulfilled');
+
+  if (allExist && options.verbose) {
+    console.log(`✨ Re-using MSDF: ${identity} (${atlasCount} atlases)`);
+  }
+
+  return allExist;
+}
+
+/**
+ * Loads and parses the metadata sidecar for a font identity.
+ */
+async function loadMetadata(
+  outputDir: string,
+  identity: string,
+): Promise<{ version: string; atlasCount?: number } | null> {
+  const dir = path.resolve(outputDir);
+  const metaPath = path.join(dir, `${identity}-meta.json`);
   try {
-    await Promise.all(files.map((f) => fs.access(f)));
-    return true;
+    const metaStr = await fs.readFile(metaPath, 'utf8');
+    return JSON.parse(metaStr);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -236,22 +147,26 @@ function getExpectedFiles(
   outputDir: string,
   identity: string,
   format: OutputFormat = 'json',
+  atlasCount = 1,
 ): string[] {
   const dir = path.resolve(outputDir);
-  const files: string[] = [];
+  const files = [path.join(dir, `${identity}-meta.json`)];
 
-  // PNG is always expected — see saveMSDFOutput comment above.
-  files.push(path.join(dir, `${identity}.png`));
+  // Identifies atlas names (e.g., "font.png" or "font-0.png", "font-1.png")
+  if (atlasCount <= 1) {
+    files.push(path.join(dir, `${identity}.png`));
+  } else {
+    for (let i = 0; i < atlasCount; i++) {
+      files.push(path.join(dir, `${identity}-${i}.png`));
+    }
+  }
 
   if (format === 'json' || format === 'both' || format === 'all') {
     files.push(path.join(dir, `${identity}.json`));
   }
-
   if (format === 'fnt' || format === 'both' || format === 'all') {
     files.push(path.join(dir, `${identity}.fnt`));
   }
-
-  files.push(path.join(dir, `${identity}-meta.json`));
   return files;
 }
 
@@ -278,76 +193,105 @@ function createProgressCallback(
 }
 
 // ---------------------------------------------------------------------------
-// Legacy / deprecated helpers
+// Charset Management
 // ---------------------------------------------------------------------------
 
-/**
- * Heuristically calculates a power-of-two atlas texture size.
- *
- * @deprecated The generator uses msdfgen-wasm's internal smart-size + pot packing
- * which produces better results. This helper is retained only for external callers.
- * @since 1.0.0
- * Will be removed in v2.0.0.
- */
-function calculateOptimalTextureSize(charCount: number, fontSize: number): [number, number] {
-  const area = charCount * (fontSize * fontSize) * 1.2;
-  const size = Math.ceil(Math.sqrt(area));
-  const pot = 2 ** Math.ceil(Math.log2(size));
-  const capped = Math.min(Math.max(pot, 64), 4096);
-  return [capped, capped];
+const COMMON_CHARSETS = {
+  ascii: () => Array.from({ length: 95 }, (_, i) => String.fromCharCode(i + 32)).join(''),
+  alphanumeric: () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+  latin: () =>
+    ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~¡¢£¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ',
+  cyrillic: () =>
+    ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя',
+  custom: (chars: string) => chars.split(''),
+};
+
+function resolveCharset(
+  c: string | (string | number)[] | Set<string | number> | undefined,
+): string {
+  if (!c) return COMMON_CHARSETS.latin();
+  if (typeof c === 'string') {
+    if (c === 'ascii') return COMMON_CHARSETS.ascii();
+    if (c === 'alphanumeric') return COMMON_CHARSETS.alphanumeric();
+    if (c === 'latin') return COMMON_CHARSETS.latin();
+    if (c === 'cyrillic') return COMMON_CHARSETS.cyrillic();
+    if (c === 'custom')
+      throw new Error('"custom" is a custom charset provider, not a preset name.');
+    return c;
+  }
+  if (Array.isArray(c)) {
+    return (c as (string | number)[])
+      .map((item) => (typeof item === 'number' ? String.fromCodePoint(item) : item))
+      .join('');
+  }
+  if (c instanceof Set) {
+    return Array.from(c)
+      .map((item) => (typeof item === 'number' ? String.fromCodePoint(item) : item))
+      .join('');
+  }
+  return String(c);
 }
 
 // ---------------------------------------------------------------------------
-// Namespace export (static-class façade for backwards compatibility)
+// Math & Layout
+// ---------------------------------------------------------------------------
+
+function calculateOptimalTextureSize(charCount: number, fontSize: number): [number, number] {
+  const areaPerChar = fontSize * fontSize * 1.2;
+  const totalArea = charCount * areaPerChar;
+  const side = Math.sqrt(totalArea);
+
+  let size = 512;
+  while (size < side && size < 4096) {
+    size *= 2;
+  }
+
+  return [size, size];
+}
+
+// ---------------------------------------------------------------------------
+// MSDFUtils Façade
 // ---------------------------------------------------------------------------
 
 /**
- * MSDFUtils exposes the utility functions as static methods.
- *
- * Implementation note: these are plain module-level functions grouped under a
- * class namespace solely for API compatibility. Biome's `noStaticOnlyClass` rule
- * is intentionally disabled for this file; prefer the named function exports for
- * new code.
+ * Static utility bundle for MSDF operations.
  */
 class MSDFUtils {
-  static getCharsets = getCharsets;
-  static getASCIICharset = getASCIICharset;
-  static getAlphanumericCharset = getAlphanumericCharset;
-  static getLatinCharset = getLatinCharset;
-  static getCyrillicCharset = getCyrillicCharset;
-  static resolveCharset = resolveCharset;
   static validateFontBuffer = validateFontBuffer;
   static saveMSDFOutput = saveMSDFOutput;
   static checkMSDFOutputExists = checkMSDFOutputExists;
+  static loadMetadata = loadMetadata;
   static getExpectedFiles = getExpectedFiles;
   static createProgressCallback = createProgressCallback;
-  static writeTextures = writeTextures;
-  static writeJsonLayout = writeJsonLayout;
-  static writeXmlLayout = writeXmlLayout;
-  static writeMetadata = writeMetadata;
-  /**
-   * @deprecated Use the native `smart-size` + `pot` generator options instead.
-   */
   static calculateOptimalTextureSize = calculateOptimalTextureSize;
+
+  static getCharsets = () => COMMON_CHARSETS;
+  static getASCIICharset = () => COMMON_CHARSETS.ascii();
+  static getAlphanumericCharset = () => COMMON_CHARSETS.alphanumeric();
+  static getLatinCharset = () => COMMON_CHARSETS.latin();
+  static getCyrillicCharset = () => COMMON_CHARSETS.cyrillic();
+  static resolveCharset = resolveCharset;
+
+  // Internal helpers exposed for testing
+  /** @internal */
+  static _writeTextures = writeTextures;
+  /** @internal */
+  static _writeJsonLayout = writeJsonLayout;
+  /** @internal */
+  static _writeXmlLayout = writeXmlLayout;
+  /** @internal */
+  static _writeMetadata = writeMetadata;
 }
 
 export {
   calculateOptimalTextureSize,
   checkMSDFOutputExists,
   createProgressCallback,
-  getAlphanumericCharset,
-  getASCIICharset,
-  getCharsets,
-  getCyrillicCharset,
   getExpectedFiles,
-  getLatinCharset,
+  loadMetadata,
   resolveCharset,
   saveMSDFOutput,
   validateFontBuffer,
-  writeJsonLayout,
-  writeMetadata,
-  writeTextures,
-  writeXmlLayout,
 };
 
 export default MSDFUtils;

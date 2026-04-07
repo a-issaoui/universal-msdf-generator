@@ -983,56 +983,44 @@ GAME</textarea>
 
             const identity = result.fontName;
             const fntUrl = `/examples/assets/fonts/${identity}.fnt`;
-            const pngUrl = `/examples/assets/fonts/${identity}.png`;
 
             /**
-             * TEXTURE LOADING CONFIGURATION
-             *
-             * These settings are CRITICAL for crisp text:
-             *
-             * 1. scaleMode: 'nearest'
-             *    - Uses nearest-neighbor interpolation
-             *    - No blurring between pixels
-             *    - Best for pixel-art style crispness
-             *
-             * 2. autoGenerateMipmaps: false
-             *    - Prevents automatic mipmap generation
-             *    - Mipmaps cause blur when texture is scaled down
-             *
-             * 3. anisotropicLevel: 16
-             *    - Maximum anisotropic filtering
-             *    - Helps with angled text (less relevant with nearest)
+             * AUTOMATIC ASSET RESOLUTION
+             * 
+             * We load the .fnt metadata file directly. PixiJS will automatically
+             * parse this file, find the required texture pages (e.g. -0.png, -1.png),
+             * and download them for us.
+             * 
+             * We use a cache-buster on the URL to ensure that if we regenerate the 
+             * same font with new settings, the browser sees the fresh version.
              */
-            const _texture = await PIXI.Assets.load({
-                src: pngUrl,
+            const font = await PIXI.Assets.load({
+                src: `${fntUrl}?v=${Date.now()}`,
+                alias: identity,
                 data: {
+                    // Set global defaults for textures discovered during loading
                     autoGenerateMipmaps: false,
-                    scaleMode: 'nearest',        // ← CRITICAL: No interpolation
+                    scaleMode: 'nearest',
                     anisotropicLevel: 16
                 }
             });
 
-            // Load font metadata (.fnt file)
-            const font = await PIXI.Assets.load({
-                src: `${fntUrl}?v=${Date.now()}`, // Cache busting
-                alias: identity,
-                data: { resourceOptions: { autoGenerateMipmaps: false } }
-            });
-
             /**
-             * APPLY TEXTURE SETTINGS TO ALL GLYPHS
-             *
-             * PixiJS BitmapFont stores individual glyph textures.
-             * We must configure each one for consistent rendering.
+             * POST-LOAD TEXTURE TUNING
+             * 
+             * For absolute precision, we iterate over every texture page loaded 
+             * for this font and ensure mipmaps are disabled and filtering is set to nearest.
              */
             if (font.textures) {
                 Object.values(font.textures).forEach(tex => {
-                    const s = tex.source;
-                    s.autoGenerateMipmaps = false;
-                    s.mipmapMode = 'none';           // ← Disable mipmaps
-                    s.scaleMode = 'nearest';         // ← Nearest neighbor
-                    s.anisotropicLevel = 16;
-                    s.update();                       // Apply changes
+                    const s = tex.baseTexture || tex.source; // Handle v7/v8 delta
+                    if (s) {
+                        s.autoGenerateMipmaps = false;
+                        s.mipmapMode = 'none';
+                        s.scaleMode = 'nearest';
+                        s.anisotropicLevel = 16;
+                        if (typeof s.update === 'function') s.update();
+                    }
                 });
             }
 

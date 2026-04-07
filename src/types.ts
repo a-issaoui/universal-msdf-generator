@@ -113,8 +113,11 @@ export type OutputFormat = 'json' | 'fnt' | 'both' | 'all';
  * Global configuration for the MSDF generation process.
  */
 export interface GenerateOptions {
-  /** Charset preset name or raw character string */
-  charset?: CharsetName | string | string[];
+  /**
+   * Charset preset name, raw character string, character array, codepoint array,
+   * or a Set of characters/codepoints.
+   */
+  charset?: CharsetName | string | string[] | number[] | Set<string | number>;
   /** Base font size for generation */
   fontSize?: number;
   /** Atlas texture dimensions [width, height] */
@@ -158,6 +161,44 @@ export interface GenerateOptions {
   generationTimeout?: number;
   /** Max concurrent fonts when using generateMultiple. Default: unlimited. */
   concurrency?: number;
+  /**
+   * Base directory for local font file resolution.
+   * When set, all local paths are resolved relative to this directory and
+   * path traversal outside it is blocked. Strongly recommended for server use.
+   */
+  basePath?: string;
+  /**
+   * Allow absolute paths when `basePath` is not set.
+   * @default false
+   * @security Only enable if you trust all callers to supply safe paths.
+   */
+  allowAbsolutePaths?: boolean;
+  /**
+   * Allow `..` traversal sequences when `basePath` is not set.
+   * @default false
+   * @security Only enable if you trust all callers to supply safe paths.
+   */
+  allowPathTraversal?: boolean;
+  /**
+   * Maximum download size in bytes for URL and Google Fonts fetches.
+   * @default 20971520 (20 MB)
+   */
+  maxDownloadSize?: number;
+  /**
+   * Retry attempts for transient network failures.
+   * @default 3
+   */
+  maxRetries?: number;
+  /**
+   * Save the raw font binary to `outputDir` after downloading.
+   * Only applies to Google Fonts and URL sources (local fonts are already on disk).
+   * When true, TTF format is preferred over WOFF to ensure the saved file can be
+   * used for future MSDF regeneration without re-downloading.
+   * The file is named `<identity>.<format>` (e.g. `Roboto-Regular.ttf`).
+   * Requires `outputDir` to be set.
+   * @default false
+   */
+  saveFontFile?: boolean;
 }
 
 /**
@@ -210,6 +251,8 @@ export interface MSDFSuccess {
 
   /** List of absolute paths to saved files */
   savedFiles?: string[];
+  /** Absolute path to the saved font binary, populated when saveFontFile is true */
+  savedFontFile?: string;
 }
 
 /**
@@ -273,4 +316,10 @@ export interface GoogleFontOptions {
   subset?: string;
   /** Target format (e.g., 'woff2') */
   format?: string;
+  /**
+   * When true, TTF is tried before WOFF so the downloaded file is suitable
+   * for future local MSDF regeneration. Used internally by saveFontFile.
+   * @internal
+   */
+  preferTTF?: boolean;
 }

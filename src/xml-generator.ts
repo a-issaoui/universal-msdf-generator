@@ -22,13 +22,14 @@ export class XMLGenerator {
    * Generates a standard BMFont XML string from layout data.
    *
    * @param layout   - The MSDF layout returned by MSDFConverter.
-   * @param _fontName - Unused. Page filenames are taken directly from {@link MSDFLayout.pages}.
+   * @param fontName - Used as the `face` attribute fallback when `layout.info.face` is empty.
    * @returns AngelCode-compliant XML string.
    */
-  public static generate(layout: MSDFLayout, _fontName: string): string {
+  public static generate(layout: MSDFLayout, fontName: string): string {
     const { info, common, chars, kernings, distanceField } = layout;
     const esc = XMLGenerator.escapeAttr;
 
+    const faceName = info.face || fontName;
     const charsetStr = Array.isArray(info.charset) ? info.charset.join(',') : (info.charset ?? '');
 
     const lines: string[] = [
@@ -36,7 +37,7 @@ export class XMLGenerator {
       '<font>',
       [
         '  <info',
-        `face="${esc(info.face)}"`,
+        `face="${esc(faceName)}"`,
         `size="${esc(info.size)}"`,
         `bold="${esc(info.bold)}"`,
         `italic="${esc(info.italic)}"`,

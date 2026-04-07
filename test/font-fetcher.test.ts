@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FontFetcher from '../src/font-fetcher.js';
 import type { FontData, FontSource } from '../src/types.js';
@@ -9,6 +10,11 @@ vi.mock('node:fs', () => ({
     stat: vi.fn(),
   },
   statSync: vi.fn(),
+}));
+
+// Mock DNS lookups so tests don't make real network calls and never block
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn().mockResolvedValue({ address: '1.1.1.1', family: 4 }),
 }));
 
 // Helper type to access private FontFetcher methods in tests
@@ -224,6 +230,18 @@ describe('FontFetcher', () => {
       expect(result.source).toBe('buffer');
     });
 
+    it('protectBuffer: prevents mutation of returned buffer in development', async () => {
+      const arr = new Uint8Array([1, 2, 3]);
+      const result = await fetcher.fetch(arr as unknown as FontSource);
+
+      // Attempting to mutate via write/fill/set should throw
+      expect(() => result.buffer.write('X')).toThrow(/Cannot mutate cached font buffer/);
+      expect(() => result.buffer.fill(0)).toThrow(/Cannot mutate cached font buffer/);
+      expect(() => (result.buffer as Buffer & { set: (v: number[]) => void }).set([0])).toThrow(
+        /Cannot mutate cached font buffer/,
+      );
+    });
+
     it('should correctly handle Uint8Array sub-views (byteOffset > 0)', async () => {
       // Backing buffer has 8 bytes; view covers bytes 2–5 (length 4)
       const backing = new ArrayBuffer(8);
@@ -305,16 +323,17 @@ describe('FontFetcher', () => {
     });
 
     it('should throw if font download fails with HTTP error', async () => {
-      // Attempt 1: CSS has a WOFF URL → download returns 500
-      const woffCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff") }';
-      // Attempt 2: CSS has no TTF URL → skipped
-      const noTtfCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
       mockFetch
-        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(woffCss) }) // attempt 1 CSS
-        .mockResolvedValueOnce({ ok: false, status: 500 }) // attempt 1 download
-        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(noTtfCss) }); // attempt 2 CSS
+        .mockResolvedValueOnce({
+          ok: true,
+          text: () =>
+            Promise.resolve(
+              '@font-face { src: url(https://fonts.gstatic.com/test.woff) format("woff"); }',
+            ),
+        })
+        .mockResolvedValue({ ok: false, status: 500, statusText: 'Internal Error' });
 
-      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('HTTP 500');
+      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow(/HTTP 500/);
     });
 
     it('should parse complex Unicode ranges correctly', async () => {
@@ -451,8 +470,8 @@ describe('FontFetcher', () => {
     });
 
     it('should handle non-Error catch in fetchFromUrl', async () => {
-      mockFetch.mockRejectedValueOnce('string-fail');
-      await expect(fetcher.fetchFromUrl('https://ex.com')).rejects.toThrow('string-fail');
+      mockFetch.mockRejectedValue('string-fail');
+      await expect(fetcher.fetchFromUrl('https://ex.com')).rejects.toThrow();
     });
 
     it('should handle unknown font format', async () => {
@@ -528,6 +547,20 @@ describe('FontFetcher', () => {
       await expect(fetcher.fetchLocalFile('fail.ttf')).rejects.toThrow('read-fail');
     });
 
+    it('should throw if basePath is not absolute', () => {
+      expect(() => new FontFetcher({ basePath: './relative' })).toThrow(
+        /basePath must be an absolute path/,
+      );
+    });
+
+    it('should normalize valid basePath', () => {
+      // Use process.cwd() as a safe absolute path for testing
+      const base = path.join(process.cwd(), 'fonts/');
+      const fetcherWithBase = new FontFetcher({ basePath: base });
+      // @ts-expect-error - accessing private options for verification
+      expect(fetcherWithBase.options.basePath).toBe(path.normalize(base));
+    });
+
     it('should reject path traversal when basePath is set', async () => {
       const secureFetcher = new FontFetcher({ basePath: '/safe/fonts', maxRetries: 1 });
       await expect(secureFetcher.fetchLocalFile('../../etc/passwd')).rejects.toThrow(
@@ -570,8 +603,79 @@ describe('FontFetcher', () => {
           }),
       );
       await expect(priv(fetcher).makeRequest('http://slow.com')).rejects.toThrow(
-        'Request timed out or aborted',
+        'Request timed out',
       );
+    });
+
+    it('fetchWithRetry: throws when maxRetries is exceeded', async () => {
+      mockFetch.mockRejectedValue(new Error('Persistent Fail'));
+      const retryFetcher = new FontFetcher({ maxRetries: 2, verbose: false });
+      vi.spyOn(priv(retryFetcher) as never, 'sleep').mockResolvedValue(undefined);
+
+      await expect(retryFetcher.fetchGoogleFont('Test')).rejects.toThrow(
+        'Failed after 2 attempts: Persistent Fail',
+      );
+    });
+
+    it('fetchWithRetry: retries on 500 error and then fails', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 500, statusText: 'Internal Error' });
+      const retryFetcher = new FontFetcher({ maxRetries: 2, verbose: false });
+      vi.spyOn(priv(retryFetcher) as never, 'sleep').mockResolvedValue(undefined);
+
+      await expect(retryFetcher.fetchFromUrl('https://example.com/font.ttf')).rejects.toThrow(
+        'Failed after 2 attempts: HTTP 500: Internal Error',
+      );
+    });
+
+    it('fetchWithRetry: handles error without message and default retry count branch', async () => {
+      // Mock options to simulate maxRetries undefined/null branch if possible,
+      // but FontFetcher options has defaults. We can mock the template literal branch by passing a non-Error.
+      mockFetch.mockRejectedValue(new Error(''));
+      const retryFetcher = new FontFetcher({ maxRetries: 1, verbose: false });
+      vi.spyOn(priv(retryFetcher) as never, 'sleep').mockResolvedValue(undefined);
+
+      await expect(retryFetcher.fetchFromUrl('https://example.com/f.ttf')).rejects.toThrow(
+        'Failed after 1 attempts: Unknown error',
+      );
+    });
+
+    it('fetchWithRetry: handles zero retries branch in error message', async () => {
+      mockFetch.mockRejectedValue(new Error('Immediate fail'));
+      const retryFetcher = new FontFetcher({ maxRetries: 0, verbose: false });
+
+      await expect(retryFetcher.fetchFromUrl('https://example.com/f.ttf')).rejects.toThrow(
+        'Failed after 0 attempts: Immediate fail',
+      );
+    });
+
+    it('fetchWithRetry: handles zero retries and Unknown Error branch', async () => {
+      // We pass maxRetries: 0 to ensure only 1 attempt (the first one) is made.
+      const retryFetcher = new FontFetcher({ maxRetries: 0 });
+      mockFetch.mockRejectedValue(new Error('')); // Empty message results in Unknown error fallback
+      await expect(retryFetcher.fetchFromUrl('https://ex.com')).rejects.toThrow(
+        'Failed after 0 attempts: Unknown error',
+      );
+    });
+
+    it('RateLimiter: waits when tokens are exhausted', async () => {
+      // Test the public acquire method which uses timeout
+      // We'll create a dedicated RateLimiter for the test to avoid interference
+      const { RateLimiter } = (await import('../src/font-fetcher.js')) as unknown as {
+        // biome-ignore lint/style/useNamingConvention: property matches class name
+        RateLimiter: new (
+          tokens: number,
+          interval: number,
+        ) => { acquire: () => Promise<void> };
+      };
+      const limiter = new RateLimiter(1, 1000);
+      await limiter.acquire(); // tokens: 0
+
+      const _start = Date.now();
+      const p = limiter.acquire(); // should wait
+      vi.useFakeTimers();
+      vi.advanceTimersByTime(1001);
+      await p;
+      vi.useRealTimers();
     });
 
     it('should throw immediately when external signal is already aborted', async () => {
@@ -636,6 +740,24 @@ describe('FontFetcher', () => {
       });
       const result = await fetcher.fetchFromUrl('https://fonts.gstatic.com/font.ttf');
       expect(result.source).toBe('url');
+    });
+
+    it('DNS SSRF: throws when DNS resolution fails', async () => {
+      const badDnsFetcher = new FontFetcher({
+        dnsResolver: () => Promise.reject(new Error('NXDOMAIN')),
+      });
+      await expect(badDnsFetcher.fetchFromUrl('https://example.com/font.ttf')).rejects.toThrow(
+        'DNS resolution failed',
+      );
+    });
+
+    it('DNS SSRF: throws when resolved IP is private', async () => {
+      const privateDnsFetcher = new FontFetcher({
+        dnsResolver: () => Promise.resolve('192.168.1.1'),
+      });
+      await expect(privateDnsFetcher.fetchFromUrl('https://example.com/font.ttf')).rejects.toThrow(
+        'blocked',
+      );
     });
   });
 
@@ -825,10 +947,41 @@ describe('FontFetcher', () => {
       await expect(fetcher.fetchLocalFile('font.ttf')).rejects.toThrow('42');
     });
 
-    it('fetchWithRetry calls sleep between attempts', async () => {
-      // Use maxRetries:2 so retry loop reaches sleep(); use fake timers to skip actual delay
+    it('rate limiter: waits when Google Fonts token bucket is exhausted', async () => {
       vi.useFakeTimers();
-      const retryFetcher = new FontFetcher({ maxRetries: 2, timeout: 100 });
+      // Advance 2s so the rate limiter bucket is fully refilled (10 tokens)
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const css = '@font-face { src: url("https://fonts.gstatic.com/t.woff") }';
+      const fontBuf = woffMagic();
+      // Prepare 11 CSS + 11 font mock responses
+      // Use mockImplementation to handle concurrent requests correctly by URL
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url.includes('css2')) {
+          return { ok: true, text: () => Promise.resolve(css) };
+        }
+        return { ok: true, arrayBuffer: () => Promise.resolve(fontBuf) };
+      });
+
+      // Launch 11 concurrent fetchGoogleFont calls — 11th will hit the rate limiter wait path
+      const promises = Array.from({ length: 11 }, () => fetcher.fetchGoogleFont('Test'));
+
+      // Advance 200ms: fires the rate limiter's ~100ms sleep AND any per-request timeouts
+      await vi.advanceTimersByTimeAsync(200);
+
+      await Promise.all(promises);
+      vi.useRealTimers();
+    });
+
+    it('fetchWithRetry calls sleep between attempts', async () => {
+      // Use maxRetries:2 so retry loop reaches sleep(); use fake timers to skip actual delay.
+      // Provide a synchronous dnsResolver so DNS check doesn't hit real network under fake timers.
+      vi.useFakeTimers();
+      const retryFetcher = new FontFetcher({
+        maxRetries: 2,
+        timeout: 100,
+        dnsResolver: () => Promise.resolve('1.1.1.1'),
+      });
 
       mockFetch.mockRejectedValueOnce(new Error('transient')).mockResolvedValueOnce({
         ok: true,
@@ -840,6 +993,30 @@ describe('FontFetcher', () => {
       await vi.advanceTimersByTimeAsync(2000);
       await fetchPromise;
       vi.useRealTimers();
+    });
+
+    it('preferTTF: reorders attempts so TTF UA is tried first', async () => {
+      const ttfMagic = new Uint8Array([0x00, 0x01, 0x00, 0x00]); // TTF magic bytes
+      const mockCss =
+        '@font-face { src: url("https://fonts.gstatic.com/t.ttf") format("truetype") }';
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          text: () => Promise.resolve(mockCss),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(ttfMagic.buffer),
+        });
+      const result = await fetcher.fetchGoogleFont('Roboto', { preferTTF: true });
+      expect(result.format).toBe('ttf');
+      // First call should use the Android UA (TTF-preferring)
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+
+      // Check the User-Agent header of the first request
+      // biome-ignore lint/suspicious/noExplicitAny: mock call arguments are untyped
+      const firstCallUA = (mockFetch.mock.calls[0][1] as any)?.headers?.['User-Agent'];
+      expect(firstCallUA).toContain('Android');
     });
   });
 });

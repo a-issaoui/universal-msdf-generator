@@ -22,7 +22,6 @@ async function googleFontsExample() {
 
       const result = await generator.generate(font.name, {
         weight: font.weight,
-        charset: 'alphanumeric',
         fontSize: 48,
         outputDir: `./examples/assets/google-fonts/${font.name.toLowerCase().replace(/\s+/g, '-')}`,
       });

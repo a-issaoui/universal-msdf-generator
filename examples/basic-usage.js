@@ -20,7 +20,6 @@ async function basicExample() {
     console.log('\n1️⃣  Generating from Google Font (Roboto):');
     const googleResult = await generator.generate('Roboto', {
       weight: '400',
-      charset: 'alphanumeric', // Use the built-in alphanumeric preset
       fontSize: 64,
     });
 

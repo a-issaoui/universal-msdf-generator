@@ -106,6 +106,17 @@ const server = createServer(async (req, res) => {
        *   - Skip regeneration if files already exist
        *   - Speeds up server restarts
        */
+      console.log(`🛠️ Resolved Generation Options:`, {
+        font,
+        fontSize: 256,
+        textureSize: [2048, 2048],
+        fieldRange: 4,
+        outputDir: ASSETS_DIR,
+        saveFontFile: true,
+        verbose: true,
+      });
+
+      const startTime = performance.now();
       const result = await generator.generate(font, {
         verbose: true,
         reuseExisting: true,
@@ -114,7 +125,10 @@ const server = createServer(async (req, res) => {
         textureSize: [2048, 2048], // ← Power of 2
         fieldRange: 4, // ← Distance field range
         outputFormat: 'all', // ← PNG + FNT
+        saveFontFile: true,
       });
+      const duration = performance.now() - startTime;
+      console.log(`⏱️ Generation took ${duration.toFixed(2)}ms`);
 
       if (!result.success) throw new Error(result.error);
 

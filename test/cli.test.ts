@@ -1,5 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { parseArgs, run } from '../src/cli.js';
+import { disposeSharedConverter } from '../src/converter.js';
+import { generate, generateMultiple } from '../src/index.js';
 
 // ── Mock generate / generateMultiple ──────────────────────────────────────
 
@@ -8,10 +10,22 @@ vi.mock('../src/index.js', () => ({
   generateMultiple: vi.fn(),
 }));
 
+vi.mock('../src/converter.js', () => ({
+  disposeSharedConverter: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function makeSuccess(fontName = 'TestFont', savedFiles = ['/out/test.png', '/out/test.json']) {
-  return { success: true as const, cached: false as const, fontName, savedFiles };
+  return {
+    success: true as const,
+    cached: false as const,
+    fontName,
+    savedFiles,
+    data: { pages: [], chars: [], kernings: [], info: {}, common: {}, distanceField: {} } as never,
+    atlases: [],
+    metadata: {} as never,
+  };
 }
 
 function makeFailure(fontName = 'TestFont', error = 'generation failed') {
@@ -21,18 +35,18 @@ function makeFailure(fontName = 'TestFont', error = 'generation failed') {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('CLI', () => {
-  // biome-ignore lint/suspicious/noExplicitAny: spy types vary across Node versions
-  let exitSpy: any;
-  let errorSpy: ReturnType<typeof vi.spyOn>;
-  let logSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: MockInstance;
+  let errorSpy: MockInstance;
+  let logSpy: MockInstance;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
-      throw new Error(`process.exit(${code})`);
-    });
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code) => null as never);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    vi.mocked(generate).mockResolvedValue(makeSuccess());
+    vi.mocked(generateMultiple).mockResolvedValue([makeSuccess()]);
   });
 
   afterEach(() => {
@@ -43,285 +57,330 @@ describe('CLI', () => {
 
   // ── parseArgs ──────────────────────────────────────────────────────────
 
-  describe('parseArgs: option parsing', () => {
-    it('returns default options when only source given', () => {
-      const { sources, options } = parseArgs(['Roboto']);
-      expect(sources).toEqual(['Roboto']);
-      expect(options.charset).toBe('alphanumeric');
-      expect(options.fontSize).toBe(48);
-      expect(options.fieldRange).toBe(4);
-      expect(options.outputFormat).toBe('json');
-      expect(options.weight).toBe('400');
-      expect(options.style).toBe('normal');
-      expect(options.name).toBeUndefined();
-      expect(options.edgeColoring).toBe('simple');
-      expect(options.padding).toBe(2);
-      expect(options.concurrency).toBeUndefined();
-      expect(options.reuseExisting).toBe(true);
-      expect(options.force).toBe(false);
-      expect(options.verbose).toBe(true);
-    });
-
-    it('-o / --out sets outputDir', () => {
-      expect(parseArgs(['Roboto', '-o', './assets']).options.outputDir).toBe('./assets');
-      expect(parseArgs(['Roboto', '--out', './dist']).options.outputDir).toBe('./dist');
-    });
-
-    it('-c / --charset sets charset', () => {
-      expect(parseArgs(['Roboto', '-c', 'latin']).options.charset).toBe('latin');
-      expect(parseArgs(['Roboto', '--charset', 'ascii']).options.charset).toBe('ascii');
-    });
-
-    it('-s sets fontSize', () => {
-      const { options } = parseArgs(['Roboto', '-s', '64']);
-      expect(options.fontSize).toBe(64);
-    });
-
-    it('-r sets fieldRange', () => {
-      const { options } = parseArgs(['Roboto', '-r', '8']);
-      expect(options.fieldRange).toBe(8);
-    });
-
-    it('--format sets outputFormat', () => {
-      const { options } = parseArgs(['Roboto', '--format', 'fnt']);
+  describe('parseArgs: comprehensive option parsing', () => {
+    it('handles all standard flags', () => {
+      const { options } = parseArgs([
+        'R',
+        '--out',
+        './o',
+        '--charset',
+        'ascii',
+        '--size',
+        '32',
+        '--range',
+        '2',
+        '--format',
+        'fnt',
+        '--weight',
+        '700',
+        '--style',
+        'italic',
+        '--name',
+        'MyFont',
+        '--edge-coloring',
+        'inktrap',
+        '--padding',
+        '5',
+        '--fix-overlaps',
+        '--timeout',
+        '5000',
+        '--concurrency',
+        '4',
+        '--verbose',
+        '--force',
+      ]);
+      expect(options.outputDir).toBe('./o');
+      expect(options.charset).toBe('ascii');
+      expect(options.fontSize).toBe(32);
+      expect(options.fieldRange).toBe(2);
       expect(options.outputFormat).toBe('fnt');
-    });
-
-    it('-w / --weight sets weight', () => {
-      expect(parseArgs(['Roboto', '-w', '700']).options.weight).toBe('700');
-      expect(parseArgs(['Roboto', '--weight', 'bold']).options.weight).toBe('bold');
-    });
-
-    it('--style sets style', () => {
-      const { options } = parseArgs(['Roboto', '--style', 'italic']);
+      expect(options.weight).toBe('700');
       expect(options.style).toBe('italic');
-    });
-
-    it('-n / --name sets name', () => {
-      expect(parseArgs(['Roboto', '-n', 'my-font']).options.name).toBe('my-font');
-      expect(parseArgs(['Roboto', '--name', 'other']).options.name).toBe('other');
-    });
-
-    it('--edge-coloring sets edgeColoring', () => {
-      const { options } = parseArgs(['Roboto', '--edge-coloring', 'inktrap']);
+      expect(options.name).toBe('MyFont');
       expect(options.edgeColoring).toBe('inktrap');
-    });
-
-    it('--padding sets padding', () => {
-      const { options } = parseArgs(['Roboto', '--padding', '4']);
-      expect(options.padding).toBe(4);
-    });
-
-    it('--concurrency sets concurrency', () => {
-      const { options } = parseArgs(['Roboto', '--concurrency', '3']);
-      expect(options.concurrency).toBe(3);
-    });
-
-    it('--force sets force: true and reuseExisting: false', () => {
-      const { options } = parseArgs(['Roboto', '-f']);
-      expect(options.force).toBe(true);
-      expect(options.reuseExisting).toBe(false);
-    });
-
-    it('--no-reuse sets reuseExisting: false', () => {
-      const { options } = parseArgs(['Roboto', '--no-reuse']);
-      expect(options.reuseExisting).toBe(false);
-    });
-
-    it('--reuse sets reuseExisting: true and force: false', () => {
-      const { options } = parseArgs(['Roboto', '-f', '--reuse']);
-      expect(options.reuseExisting).toBe(true);
-      expect(options.force).toBe(false);
-    });
-
-    it('-q sets verbose: false', () => {
-      const { options } = parseArgs(['Roboto', '-q']);
-      expect(options.verbose).toBe(false);
-    });
-
-    it('-v sets verbose: true', () => {
-      const { options } = parseArgs(['Roboto', '-q', '-v']);
-      expect(options.verbose).toBe(true);
-    });
-
-    it('--verbose (long form) sets verbose: true', () => {
-      const { options } = parseArgs(['Roboto', '-q', '--verbose']);
-      expect(options.verbose).toBe(true);
-    });
-
-    it('--quiet (long form) sets verbose: false', () => {
-      const { options } = parseArgs(['Roboto', '--quiet']);
-      expect(options.verbose).toBe(false);
-    });
-
-    it('--force (long form) sets force: true', () => {
-      const { options } = parseArgs(['Roboto', '--force']);
-      expect(options.force).toBe(true);
-      expect(options.reuseExisting).toBe(false);
-    });
-
-    it('--fix-overlaps sets fixOverlaps: true', () => {
-      const { options } = parseArgs(['Roboto', '--no-fix-overlaps', '--fix-overlaps']);
+      expect(options.padding).toBe(5);
       expect(options.fixOverlaps).toBe(true);
+      expect(options.generationTimeout).toBe(5000);
+      expect(options.concurrency).toBe(4);
+      expect(options.verbose).toBe(true);
+      expect(options.force).toBe(true);
     });
 
-    it('--no-fix-overlaps sets fixOverlaps: false', () => {
-      const { options } = parseArgs(['Roboto', '--no-fix-overlaps']);
+    it('handles aliases and short flags', () => {
+      const { options } = parseArgs([
+        'R',
+        '-o',
+        './o',
+        '-c',
+        'ascii',
+        '-s',
+        '12',
+        '-r',
+        '1',
+        '-w',
+        '100',
+        '-n',
+        'F',
+        '-v',
+        '-f',
+      ]);
+      expect(options.outputDir).toBe('./o');
+      expect(options.charset).toBe('ascii');
+      expect(options.fontSize).toBe(12);
+      expect(options.fieldRange).toBe(1);
+      expect(options.weight).toBe('100');
+      expect(options.name).toBe('F');
+      expect(options.verbose).toBe(true);
+      expect(options.force).toBe(true);
+    });
+
+    it('handles negative flags and quiet mode', () => {
+      const { options } = parseArgs(['R', '--no-fix-overlaps', '--quiet', '--no-reuse']);
       expect(options.fixOverlaps).toBe(false);
+      expect(options.verbose).toBe(false);
+      expect(options.reuseExisting).toBe(false);
     });
 
-    it('--timeout sets generationTimeout', () => {
-      const { options } = parseArgs(['Roboto', '--timeout', '30000']);
-      expect(options.generationTimeout).toBe(30000);
+    it('throws for invalid padding', () => {
+      expect(() => parseArgs(['R', '--padding', 'abc'])).toThrow(
+        '--padding must be a non-negative number',
+      );
     });
 
-    it('collects multiple sources', () => {
-      const { sources } = parseArgs(['Roboto', 'Lato', '"Open Sans"']);
-      expect(sources).toEqual(['Roboto', 'Lato', '"Open Sans"']);
+    it('throws for invalid timeout', () => {
+      expect(() => parseArgs(['R', '--timeout', '0'])).toThrow(
+        '--timeout must be a positive number',
+      );
+    });
+
+    it('throws for invalid concurrency', () => {
+      expect(() => parseArgs(['R', '--concurrency', '-1'])).toThrow(
+        '--concurrency must be a positive number',
+      );
+    });
+
+    it('throws for unknown options (hits handler catch block)', () => {
+      // In the loop, unknown options trigger an error in the handler lookup or inside run
+      // Actually parser throws if not in FLAG_HANDLERS
+      expect(() => parseArgs(['R', '--unknown'])).toThrow('Unknown option: --unknown');
     });
   });
 
-  // ── parseArgs: validation errors ──────────────────────────────────────
+  // ── run: execution ──────────────────────────────────────────────────
 
-  describe('parseArgs: validation errors', () => {
-    it('exits 1 for non-numeric --size', () => {
-      expect(() => parseArgs(['Roboto', '--size', 'big'])).toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Font size must be a number'));
+  describe('run: execution paths', () => {
+    it('shows help and exits 0 when no args', async () => {
+      process.argv = ['node', 'cli.js'];
+      await run();
+      expect(logSpy).toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(0);
     });
 
-    it('exits 1 for non-numeric --range', () => {
-      expect(() => parseArgs(['Roboto', '--range', 'far'])).toThrow('process.exit(1)');
+    it('handles unhandledRejection listener directly', async () => {
+      const listener = process
+        .listeners('unhandledRejection')
+        .find((l) => l.toString().includes('gracefulShutdown'));
+      if (listener) {
+        await (listener as (...args: unknown[]) => Promise<void>)(
+          new Error('rejection-fail'),
+          Promise.resolve(),
+        );
+        await (listener as (...args: unknown[]) => Promise<void>)('Str', Promise.resolve());
+      }
+      expect(exitSpy).toHaveBeenCalled();
     });
 
-    it('exits 1 for invalid --format', () => {
-      expect(() => parseArgs(['Roboto', '--format', 'xml'])).toThrow('process.exit(1)');
+    it('handles unexpected thrown error in run', async () => {
+      vi.mocked(generate).mockRejectedValueOnce(new Error('crash'));
+      process.argv = ['node', 'cli.js', 'Roboto'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('crash'));
+    });
+
+    it('throws error when no source is provided', async () => {
+      process.argv = ['node', 'cli.js', '--size', '32'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('No font source provided'));
+    });
+
+    it('executes single font generation successfully', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto'];
+      await run();
+      expect(generate).toHaveBeenCalledWith('Roboto', expect.any(Object));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('MSDF generation successful'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('handles single font generation failure', async () => {
+      vi.mocked(generate).mockResolvedValueOnce(makeFailure('Roboto', 'failed-msg'));
+      process.argv = ['node', 'cli.js', 'Roboto'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('failed-msg'));
+    });
+
+    it('executes batch font generation successfully', async () => {
+      vi.mocked(generateMultiple).mockResolvedValueOnce([
+        makeSuccess('Roboto'),
+        makeSuccess('Open Sans'),
+      ]);
+      process.argv = ['node', 'cli.js', 'Roboto', 'Open Sans'];
+      await run();
+      expect(generateMultiple).toHaveBeenCalledWith(['Roboto', 'Open Sans'], expect.any(Object));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Roboto'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Open Sans'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('handles mixed results in batch mode', async () => {
+      vi.mocked(generateMultiple).mockResolvedValueOnce([
+        makeSuccess('Roboto'),
+        makeFailure('Open Sans', 'batch-fail'),
+      ]);
+      process.argv = ['node', 'cli.js', 'Roboto', 'Open Sans'];
+      await run();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('batch-fail'));
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('respects quiet mode', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--quiet'];
+      await run();
+      // "Initializing..." log should be suppressed
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('Initializing'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('throws error for invalid --range', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--range', 'invalid'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Field range must be a number'),
+      );
+    });
+
+    it('throws error for invalid --format', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--format', 'invalid'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('--format must be one of'));
     });
 
-    it('exits 1 for invalid --edge-coloring', () => {
-      expect(() => parseArgs(['Roboto', '--edge-coloring', 'fancy'])).toThrow('process.exit(1)');
+    it('throws error for invalid --edge-coloring', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--edge-coloring', 'invalid'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining('--edge-coloring must be one of'),
       );
     });
 
-    it('exits 1 for non-numeric --padding', () => {
-      expect(() => parseArgs(['Roboto', '--padding', 'x'])).toThrow('process.exit(1)');
+    it('handles unexpected non-Error thrown in run', async () => {
+      vi.mocked(generate).mockRejectedValueOnce('string-crash');
+      process.argv = ['node', 'cli.js', 'Roboto'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('string-crash'));
     });
 
-    it('exits 1 for non-positive --concurrency', () => {
-      expect(() => parseArgs(['Roboto', '--concurrency', '0'])).toThrow('process.exit(1)');
+    it('throws error for invalid --size', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--size', 'NotANumber'];
+      await run();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Font size must be a number'));
     });
 
-    it('exits 1 for non-positive --timeout', () => {
-      expect(() => parseArgs(['Roboto', '--timeout', '0'])).toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('--timeout must be a positive number'),
-      );
-    });
-
-    it('exits 1 for unknown flag', () => {
-      expect(() => parseArgs(['Roboto', '--unknown'])).toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Unknown option: --unknown'));
-    });
-  });
-
-  // ── run: help / no args ────────────────────────────────────────────────
-
-  describe('run: help and no-args', () => {
-    it('shows help and exits 0 when no args', async () => {
-      process.argv = ['node', 'cli.js'];
-      await expect(run()).rejects.toThrow('process.exit(0)');
-      expect(logSpy).toHaveBeenCalled();
-    });
-
-    it('shows help for --help', async () => {
-      process.argv = ['node', 'cli.js', '--help'];
-      await expect(run()).rejects.toThrow('process.exit(0)');
-    });
-
-    it('exits 1 when flags given but no source', async () => {
-      process.argv = ['node', 'cli.js', '--size', '64'];
-      await expect(run()).rejects.toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('No font source provided'));
-    });
-  });
-
-  // ── run: single font ───────────────────────────────────────────────────
-
-  describe('run: single font', () => {
-    it('calls generate with source and logs success', async () => {
-      const { generate } = await import('../src/index.js');
-      (generate as ReturnType<typeof vi.fn>).mockResolvedValue(makeSuccess());
-      process.argv = ['node', 'cli.js', 'Roboto', '-c', 'ascii'];
+    it('handles shorthand aliases', async () => {
+      process.argv = [
+        'node',
+        'cli.js',
+        'Roboto',
+        '-o',
+        './out',
+        '-c',
+        'latin',
+        '-s',
+        '42',
+        '-r',
+        '10',
+        '-w',
+        '700',
+        '-n',
+        'MyFont',
+        '-v',
+        '-q',
+        '--reuse',
+        '-f',
+      ];
       await run();
       expect(generate).toHaveBeenCalledWith(
         'Roboto',
-        expect.objectContaining({ charset: 'ascii' }),
+        expect.objectContaining({
+          outputDir: './out',
+          charset: 'latin',
+          fontSize: 42,
+          fieldRange: 10,
+          weight: '700',
+          name: 'MyFont',
+          verbose: false, // overridden by later -q
+          force: true, // overrides the earlier --reuse
+        }),
       );
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('successful'));
     });
 
-    it('exits 1 when generate returns failure', async () => {
-      const { generate } = await import('../src/index.js');
-      (generate as ReturnType<typeof vi.fn>).mockResolvedValue(makeFailure());
-      process.argv = ['node', 'cli.js', 'Roboto'];
-      await expect(run()).rejects.toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('generation failed'));
+    it('--save-font sets saveFontFile: true', async () => {
+      process.argv = ['node', 'cli.js', 'Roboto', '--save-font'];
+      await run();
+      expect(generate).toHaveBeenCalledWith(
+        'Roboto',
+        expect.objectContaining({ saveFontFile: true }),
+      );
     });
 
-    it('exits 1 on unexpected thrown error', async () => {
-      const { generate } = await import('../src/index.js');
-      (generate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('crash'));
-      process.argv = ['node', 'cli.js', 'Roboto'];
-      await expect(run()).rejects.toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('crash'));
-    });
-
-    it('stringifies non-Error thrown values', async () => {
-      const { generate } = await import('../src/index.js');
-      (generate as ReturnType<typeof vi.fn>).mockRejectedValue('raw string error');
-      process.argv = ['node', 'cli.js', 'Roboto'];
-      await expect(run()).rejects.toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('raw string error'));
+    it('reports savedFontFile path in console output', async () => {
+      vi.mocked(generate).mockResolvedValueOnce({
+        success: true,
+        fontName: 'Roboto',
+        savedFiles: ['/out/Roboto.json'],
+        savedFontFile: '/out/Roboto.ttf',
+      } as never);
+      process.argv = ['node', 'cli.js', 'Roboto', '--save-font'];
+      await run();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('/out/Roboto.ttf'));
     });
   });
 
-  // ── run: batch mode ────────────────────────────────────────────────────
-
-  describe('run: batch mode', () => {
-    it('calls generateMultiple for multiple sources', async () => {
-      const { generateMultiple } = await import('../src/index.js');
-      (generateMultiple as ReturnType<typeof vi.fn>).mockResolvedValue([
-        makeSuccess('Roboto'),
-        makeSuccess('Lato'),
-      ]);
-      process.argv = ['node', 'cli.js', 'Roboto', 'Lato'];
-      await run();
-      expect(generateMultiple).toHaveBeenCalledWith(['Roboto', 'Lato'], expect.any(Object));
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Roboto'));
+  describe('Signals', () => {
+    it('handles SIGINT', async () => {
+      process.emit('SIGINT');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(exitSpy).toHaveBeenCalledWith(130);
     });
 
-    it('passes --concurrency to generateMultiple', async () => {
-      const { generateMultiple } = await import('../src/index.js');
-      (generateMultiple as ReturnType<typeof vi.fn>).mockResolvedValue([makeSuccess('Roboto')]);
-      process.argv = ['node', 'cli.js', 'Roboto', 'Lato', '--concurrency', '2'];
-      await run();
-      expect(generateMultiple).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({ concurrency: 2 }),
-      );
+    it('handles SIGTERM', async () => {
+      process.emit('SIGTERM');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(exitSpy).toHaveBeenCalledWith(143);
     });
 
-    it('exits 1 when any font in batch fails', async () => {
-      const { generateMultiple } = await import('../src/index.js');
-      (generateMultiple as ReturnType<typeof vi.fn>).mockResolvedValue([
-        makeSuccess('Roboto'),
-        makeFailure('Lato', 'network error'),
-      ]);
-      process.argv = ['node', 'cli.js', 'Roboto', 'Lato'];
-      await expect(run()).rejects.toThrow('process.exit(1)');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('network error'));
+    it('gracefulShutdown: exits immediately on second signal', async () => {
+      vi.mocked(disposeSharedConverter).mockImplementationOnce(async () => {
+        // Slow down to ensure second signal hits during shutdown
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      process.emit('SIGINT');
+      process.emit('SIGINT');
+      expect(exitSpy).toHaveBeenCalledWith(130);
+    });
+
+    it('gracefulShutdown: ignores errors during cleanup', async () => {
+      vi.mocked(disposeSharedConverter).mockRejectedValueOnce(new Error('fail-cleanup'));
+      process.emit('SIGTERM');
+      await new Promise((r) => setTimeout(r, 10)); // wait for async shutdown
+      expect(exitSpy).toHaveBeenCalledWith(143);
     });
   });
 });

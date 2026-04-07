@@ -14,6 +14,10 @@ function generateAtlasName(fontName: string, index: number, count: number): stri
 
 /**
  * Runs a promise with a hard timeout. Rejects with a timeout error if ms elapses.
+ *
+ * ⚠️ IMPORTANT LIMITATION: This timeout only abandons the waiting promise.
+ * The underlying WASM computation continues executing synchronously on the main thread
+ * and CANNOT be aborted in Node.js. CPU and memory remain occupied until completion.
  */
 function withTimeout<T>(ms: number, label: string, fn: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -137,7 +141,6 @@ class MSDFConverter {
 
   constructor(options: GenerateOptions = {}) {
     this.options = {
-      charset: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
       fontSize: 48,
       textureSize: [512, 512],
       fieldRange: 4,
@@ -192,7 +195,7 @@ class MSDFConverter {
         );
 
         // Resolve charset to an array of unique codepoints
-        const charString = resolveCharset(charset as string | string[] | undefined);
+        const charString = resolveCharset(charset);
         const codepoints = [
           ...new Set(
             [...charString]
@@ -239,7 +242,7 @@ class MSDFConverter {
           fieldRange as number,
         );
 
-        const charsetStr = resolveCharset(charset as string | string[] | undefined);
+        const charsetStr = resolveCharset(charset);
 
         if (hasProgress) {
           options.onProgress?.(100, 1, 1);
@@ -297,9 +300,49 @@ class MSDFConverter {
   }
 
   async dispose(): Promise<void> {
-    this.gen = null;
+    if (this.gen) {
+      // Set to null to release the reference and allow GC.
+      // msdfgen-wasm manages WASM memory internally — no .delete() needed.
+      this.gen = null;
+    }
     this.initPromise = null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level shared WASM instance
+// Used by standalone convenience functions (generate / generateMultiple) so that
+// the WASM module is initialized once and reused across calls.
+// UniversalMSDFGenerator manages its own instance and is NOT affected by this.
+// NOTE: This is intentionally never disposed — it lives for the process lifetime.
+// ---------------------------------------------------------------------------
+
+let _sharedConverter: MSDFConverter | null = null;
+let _sharedConverterInit: Promise<MSDFConverter> | null = null;
+
+export async function getSharedConverter(): Promise<MSDFConverter> {
+  if (_sharedConverter) return _sharedConverter;
+  if (!_sharedConverterInit) {
+    _sharedConverterInit = (async () => {
+      const c = new MSDFConverter({});
+      await c.initialize();
+      _sharedConverter = c;
+      return c;
+    })();
+  }
+  return _sharedConverterInit;
+}
+
+/**
+ * Disposes the shared WASM converter instance.
+ * Useful for long-running server processes to manage memory.
+ */
+export async function disposeSharedConverter(): Promise<void> {
+  if (_sharedConverter) {
+    await _sharedConverter.dispose();
+    _sharedConverter = null;
+  }
+  _sharedConverterInit = null;
 }
 
 export default MSDFConverter;

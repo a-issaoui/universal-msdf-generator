@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import MSDFConverter from '../src/converter.js';
+import MSDFConverter, { getSharedConverter } from '../src/converter.js';
 
 // ── Mock msdfgen-wasm ────────────────────────────────────────────────────────
 // vi.mock is hoisted — the factory cannot reference top-level variables.
@@ -84,6 +84,7 @@ function makeGenInstance(
     packGlyphs: ReturnType<typeof vi.fn>;
     createAtlasImage: ReturnType<typeof vi.fn>;
     loadFont: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
   }>,
 ) {
   return {
@@ -92,6 +93,7 @@ function makeGenInstance(
     packGlyphs: overrides?.packGlyphs ?? vi.fn().mockReturnValue([makeBin()]),
     createAtlasImage:
       overrides?.createAtlasImage ?? vi.fn().mockReturnValue(new Uint8Array(512 * 256 * 4)),
+    delete: overrides?.delete ?? vi.fn(),
     get metrics() {
       return makeMetrics();
     },
@@ -478,6 +480,51 @@ describe('MSDFConverter', () => {
       const results = await converter.convertMultiple([{ buffer: makeBuf(), name: 'F' }]);
       expect(results[0].success).toBe(false);
       if (!results[0].success) expect(results[0].error).toContain('raw-fail');
+    });
+  });
+
+  // ── getSharedConverter ─────────────────────────────────────────────────────
+
+  describe('getSharedConverter', () => {
+    it('returns an initialized MSDFConverter instance', async () => {
+      const shared = await getSharedConverter();
+      expect(shared).toBeInstanceOf(MSDFConverter);
+    });
+
+    it('returns the same instance on subsequent calls (singleton)', async () => {
+      const a = await getSharedConverter();
+      const b = await getSharedConverter();
+      expect(a).toBe(b);
+    });
+
+    it('concurrent calls return the same instance without double-init', async () => {
+      const [a, b, c] = await Promise.all([
+        getSharedConverter(),
+        getSharedConverter(),
+        getSharedConverter(),
+      ]);
+      expect(a).toBe(b);
+      expect(b).toBe(c);
+    });
+  });
+
+  describe('disposeSharedConverter', () => {
+    it('disposes the shared instance and clears state', async () => {
+      const { disposeSharedConverter } = await import('../src/converter.js');
+      const a = await getSharedConverter();
+      const spy = vi.spyOn(a, 'dispose');
+      await disposeSharedConverter();
+      expect(spy).toHaveBeenCalled();
+
+      // Subsequent call creates a new one
+      const b = await getSharedConverter();
+      expect(a).not.toBe(b);
+    });
+
+    it('no-op if shared instance does not exist', async () => {
+      const { disposeSharedConverter } = await import('../src/converter.js');
+      // Already disposed or never created
+      await expect(disposeSharedConverter()).resolves.toBeUndefined();
     });
   });
 });

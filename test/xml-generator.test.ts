@@ -93,6 +93,15 @@ describe('XMLGenerator', () => {
     expect(xml).toContain('face="Font &amp; &quot;Special&quot;"');
   });
 
+  it('uses fontName as face fallback when info.face is empty', () => {
+    const layout = {
+      ...mockLayout,
+      info: { ...mockLayout.info, face: '' },
+    } as MSDFLayout;
+    const xml = XMLGenerator.generate(layout, 'fallback-name');
+    expect(xml).toContain('face="fallback-name"');
+  });
+
   it('should handle null/undefined in escapeAttr', () => {
     // Access private static method for branch coverage
     type EscapeAttrFn = { escapeAttr(v: string | number | null | undefined): string };

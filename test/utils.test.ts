@@ -15,6 +15,7 @@ vi.mock('node:fs', () => ({
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
     access: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn().mockResolvedValue('{"version":"1.0","atlasCount":1}'),
   },
 }));
 
@@ -64,11 +65,27 @@ describe('MSDFUtils', () => {
 
     it('should resolve charsets correctly', () => {
       const resolve = MSDFUtils.resolveCharset;
-      expect(resolve(undefined)).toBe(MSDFUtils.getAlphanumericCharset());
+      expect(resolve(undefined)).toBe(MSDFUtils.getLatinCharset());
+      expect(resolve('latin')).toBe(MSDFUtils.getLatinCharset());
+      expect(resolve('alphanumeric')).toBe(MSDFUtils.getAlphanumericCharset());
+      expect(resolve('cyrillic')).toBe(MSDFUtils.getCyrillicCharset());
       expect(resolve(['a', 'b'])).toBe('ab');
+      expect(resolve([65, 66, 'C'])).toBe('ABC');
       expect(resolve('ascii')).toBe(MSDFUtils.getASCIICharset());
       expect(resolve('custom-raw')).toBe('custom-raw');
-      expect(() => resolve('custom')).toThrow('"custom" is a charset provider');
+      expect(() => resolve('custom')).toThrow(
+        '"custom" is a custom charset provider, not a preset name.',
+      );
+    });
+
+    it('should handle Set charsets', () => {
+      const resolve = MSDFUtils.resolveCharset;
+      expect(resolve(new Set(['a', 'b']))).toBe('ab');
+      expect(resolve(new Set([65, 66, 'C']))).toBe('ABC');
+    });
+
+    it('should fallback to string coercion for numbers', () => {
+      expect(MSDFUtils.resolveCharset(1234 as unknown as Set<string>)).toBe('1234');
     });
   });
 
@@ -87,8 +104,8 @@ describe('MSDFUtils', () => {
 
     it('should handle small character counts', () => {
       const [w, h] = MSDFUtils.calculateOptimalTextureSize(1, 48);
-      expect(w).toBe(64);
-      expect(h).toBe(64);
+      expect(w).toBe(512);
+      expect(h).toBe(512);
     });
 
     it('should handle moderate character counts', () => {
@@ -99,19 +116,14 @@ describe('MSDFUtils', () => {
   });
 
   describe('validateFontBuffer', () => {
-    it('should throw on empty buffer', () => {
-      expect(() => MSDFUtils.validateFontBuffer(Buffer.alloc(0))).toThrow('Font buffer is empty');
-      expect(() => MSDFUtils.validateFontBuffer(null as unknown as Buffer)).toThrow(
-        'Font buffer is empty',
-      );
+    it('should reject empty or null buffer', () => {
+      expect(MSDFUtils.validateFontBuffer(Buffer.alloc(0))).toBe(false);
+      expect(MSDFUtils.validateFontBuffer(null as unknown as Buffer)).toBe(false);
     });
 
-    it('should warn on invalid signature but return true', () => {
-      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('should reject invalid signature', () => {
       const invalidBuffer = Buffer.from([0x00, 0x00, 0x00, 0x00]);
-      expect(MSDFUtils.validateFontBuffer(invalidBuffer)).toBe(true);
-      expect(spy).toHaveBeenCalledWith(expect.stringContaining('might not be valid'));
-      spy.mockRestore();
+      expect(MSDFUtils.validateFontBuffer(invalidBuffer)).toBe(false);
     });
 
     it('should validate valid signatures', () => {
@@ -159,6 +171,19 @@ describe('MSDFUtils', () => {
       );
     });
 
+    it('should use fallback output options correctly', async () => {
+      await MSDFUtils.saveMSDFOutput(
+        {
+          success: true,
+          fontName: 'font',
+          metadata: { version: '1.0' },
+          atlases: [{ texture: Buffer.alloc(0) }, { texture: Buffer.alloc(0) }] as never,
+        } as unknown as MSDFSuccess,
+        './out',
+      );
+      expect(fs.writeFile).toHaveBeenCalled();
+    });
+
     it('should use custom filename', async () => {
       await MSDFUtils.saveMSDFOutput(mockResult, './out', { filename: 'CustomName' });
       expect(fs.writeFile).toHaveBeenCalledWith(
@@ -171,7 +196,7 @@ describe('MSDFUtils', () => {
       const resultNoName = { ...mockResult, fontName: undefined } as unknown as MSDFSuccess;
       await MSDFUtils.saveMSDFOutput(resultNoName, './out');
       expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining(path.join(path.resolve('./out'), 'msdf-font.json')),
+        expect.stringContaining(path.join(path.resolve('./out'), 'font.json')),
         expect.any(String),
       );
     });
@@ -183,7 +208,7 @@ describe('MSDFUtils', () => {
       };
       await MSDFUtils.saveMSDFOutput(resultWithAtlas, './out');
       expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining(path.join(path.resolve('./out'), 'atlas.png')),
+        expect.stringContaining(path.join(path.resolve('./out'), 'TestFont.png')),
         expect.any(Buffer),
       );
     });
@@ -202,6 +227,7 @@ describe('MSDFUtils', () => {
 
     it('should NOT write XML if missing from result despite format being fnt', async () => {
       const resultNoXml = {
+        ...mockResult,
         success: true,
         fontName: 'Test',
         xml: undefined,
@@ -218,6 +244,7 @@ describe('MSDFUtils', () => {
 
     it('should write XML for all relevant formats', async () => {
       const resultWithXml = {
+        ...mockResult,
         success: true,
         fontName: 'T',
         xml: '<x></x>',
@@ -307,6 +334,20 @@ describe('MSDFUtils', () => {
       expect(files).toContain(path.join(resolvedOut, 'font-meta.json'));
     });
 
+    describe('loadMetadata', () => {
+      it('should return null if file does not exist', async () => {
+        vi.mocked(fs.readFile).mockRejectedValueOnce({ code: 'ENOENT' });
+        const result = await MSDFUtils.loadMetadata('./out', 'font');
+        expect(result).toBe(null);
+      });
+
+      it('should return null if JSON is malformed', async () => {
+        vi.mocked(fs.readFile).mockResolvedValueOnce('invalid json');
+        const result = await MSDFUtils.loadMetadata('./out', 'font');
+        expect(result).toBe(null);
+      });
+    });
+
     it('should check if MSDF output exists (all files present, default options)', async () => {
       vi.mocked(fs.access).mockResolvedValue(undefined);
       const result = await MSDFUtils.checkMSDFOutputExists('./out', 'font');
@@ -314,10 +355,29 @@ describe('MSDFUtils', () => {
       expect(fs.access).toHaveBeenCalled();
     });
 
+    it('should support verbose logging', async () => {
+      vi.mocked(fs.readFile).mockResolvedValue('{"atlasCount":1,"version":"1.0"}');
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      await MSDFUtils.checkMSDFOutputExists('./out', 'F', { verbose: true });
+    });
+
     it('should return false if any file is missing', async () => {
       vi.mocked(fs.access).mockRejectedValueOnce(new Error('Missing'));
       const result = await MSDFUtils.checkMSDFOutputExists('./out', 'font');
       expect(result).toBe(false);
+    });
+
+    it('should return false if metadata version mismatches', async () => {
+      vi.mocked(fs.readFile).mockResolvedValueOnce('{"version":"0.9","atlasCount":1}');
+      const result = await MSDFUtils.checkMSDFOutputExists('./out', 'font');
+      expect(result).toBe(false);
+    });
+
+    it('should default missing atlasCount to 1', async () => {
+      vi.mocked(fs.readFile).mockResolvedValueOnce('{"version":"1.0"}');
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      const result = await MSDFUtils.checkMSDFOutputExists('./out', 'font');
+      expect(result).toBe(true);
     });
 
     it('should return false if access throws unexpectedly', async () => {

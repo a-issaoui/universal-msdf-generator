@@ -72,7 +72,7 @@ npx universal-msdf "Roboto" --force --format both --weight 700
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--out`, `-o` | Output directory | `./output` |
-| `--charset`, `-c` | Preset (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or literal string | `alphanumeric` |
+| `--charset`, `-c` | Preset (`ascii`, `alphanumeric`, `latin`, `cyrillic`) or literal string | `latin` |
 | `--size`, `-s` | Font size in pixels | `48` |
 | `--range`, `-r` | Distance field range in pixels | `4` |
 | `--format` | Output format: `json` \| `fnt` \| `both` \| `all` | `json` |
@@ -88,6 +88,7 @@ npx universal-msdf "Roboto" --force --format both --weight 700
 | `--reuse` | Skip generation if output files exist | `true` |
 | `--no-reuse` | Always re-generate | — |
 | `--force`, `-f` | Force re-generation (overrides `--reuse`) | `false` |
+| `--save-font` | Persist downloaded font binary to output directory | `false` |
 | `--verbose`, `-v` | Enable detailed logs | `true` |
 | `--quiet`, `-q` | Suppress all non-error output | — |
 
@@ -131,7 +132,7 @@ const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
 |--------|------|---------|-------------|
 | `outputDir` | `string` | — | Directory to save output files |
 | `outputFormat` | `'json' \| 'fnt' \| 'both' \| 'all'` | `'json'` | Which layout file(s) to write |
-| `charset` | `string \| string[]` | `'alphanumeric'` | Preset name or literal character string |
+| `charset` | `string \| string[]` | `'latin'` | Preset name or literal character string |
 | `fontSize` | `number` | `48` | Glyph rasterization size in pixels |
 | `fieldRange` | `number` | `4` | SDF distance range in pixels — `2–4` for sharp UI text, `6–8` for glow/outline effects |
 | `textureSize` | `[number, number]` | auto | Atlas texture dimensions; auto-sizes to next POT if omitted |
@@ -143,6 +144,7 @@ const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
 | `name` | `string` | derived | Override the output filename stem |
 | `reuseExisting` | `boolean` | `true` | Skip generation if output files already exist |
 | `force` | `boolean` | `false` | Regenerate even when `reuseExisting` is set |
+| `saveFontFile` | `boolean` | `false` | Save the downloaded font binary to the `outputDir` |
 | `concurrency` | `number` | unlimited | Max parallel fonts in `generateMultiple` |
 | `generationTimeout` | `number` | `60000` | Max ms before a generation attempt times out |
 | `verbose` | `boolean` | `true` | Log progress to stdout |
