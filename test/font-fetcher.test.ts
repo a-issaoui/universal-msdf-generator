@@ -309,6 +309,25 @@ describe('FontFetcher', () => {
       expect(secondUrl).toContain('wght@0,400');
     });
 
+    it('should support all standard weight aliases (ExtraLight, Medium, etc.)', async () => {
+      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/t.woff") }';
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(woffMagic()) });
+
+      // Test "Extra Light" -> 200
+      await fetcher.fetchGoogleFont('Roboto', { weight: 'Extra Light' });
+      expect(mockFetch.mock.calls[0][0]).toContain('wght@0,200');
+
+      // Test "Black" -> 900
+      mockFetch.mockClear();
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(woffMagic()) });
+      await fetcher.fetchGoogleFont('Roboto', { weight: 'Black' });
+      expect(mockFetch.mock.calls[0][0]).toContain('wght@0,900');
+    });
+
     it('should throw if font URL cannot be extracted from any attempt', async () => {
       // All 3 attempts get CSS with no usable URLs → all fail
       mockFetch.mockResolvedValue({

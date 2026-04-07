@@ -1,6 +1,6 @@
 {
   "name": "@a-issaoui/universal-msdf-generator",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "type": "module",
   "description": "Enterprise-grade Universal MSDF Font Generator for Google Fonts, URLs, and Local Files. Highly-performant, cross-platform, and TypeScript 6.0 native with 100% test coverage.",
   "author": "A. Issaoui <github.com/a-issaoui>",

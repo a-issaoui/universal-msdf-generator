@@ -421,7 +421,21 @@ export class FontFetcher {
     const { weight = '400', style = 'normal' } = options;
 
     // Map common aliases to numeric weights for Google Fonts v2 API
-    const resolvedWeight = weight === 'bold' ? '700' : weight === 'normal' ? '400' : weight;
+    const WeightMap: Record<string, string> = {
+      thin: '100',
+      extralight: '200',
+      light: '300',
+      regular: '400',
+      normal: '400',
+      medium: '500',
+      semibold: '600',
+      bold: '700',
+      extrabold: '800',
+      black: '900',
+    };
+
+    const normalizedWeight = weight.toLowerCase().replace(/[- ]/g, '');
+    const resolvedWeight = WeightMap[normalizedWeight] || weight;
 
     // Rate-limit calls to the Google Fonts CSS endpoint
     await googleFontsRateLimiter.acquire();
