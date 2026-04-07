@@ -92,8 +92,8 @@
            ═══════════════════════════════════════════════════════════════════════ */
         #kb-hint {
             position: absolute;
-            top: 30px;
-            right: 30px;
+            bottom: 110px;
+            left: 30px;
             z-index: 100;
             background: rgba(255,255,255,0.9);
             border: 1px solid rgba(0,0,0,0.1);
@@ -264,6 +264,112 @@
         #pan-display.active { color: #00000088; }
 
         /* ═══════════════════════════════════════════════════════════════════════
+           FONT PICKER
+           ═══════════════════════════════════════════════════════════════════════ */
+        #font-picker {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            z-index: 100;
+            background: rgba(255,255,255,0.9);
+            border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 20px;
+            padding: 18px 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-width: 240px;
+        }
+
+        #font-picker label {
+            font-size: .6rem;
+            font-weight: 900;
+            color: #000;
+            text-transform: uppercase;
+            letter-spacing: .12em;
+        }
+
+        #font-picker-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        #font-input {
+            flex: 1;
+            padding: 7px 12px;
+            border-radius: 100px;
+            border: 1px solid rgba(0,0,0,.2);
+            background: rgba(0,0,0,.04);
+            font-size: .75rem;
+            font-weight: 700;
+            color: #000;
+            outline: none;
+            font-family: inherit;
+        }
+
+        #font-input:focus {
+            border-color: #000;
+            background: #fff;
+        }
+
+        #font-load-btn {
+            padding: 7px 14px;
+            border-radius: 100px;
+            border: 1px solid rgba(0,0,0,.3);
+            background: #000;
+            color: #fff;
+            font-size: .65rem;
+            font-weight: 900;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background .2s;
+        }
+
+        #font-load-btn:hover { background: #333; }
+        #font-load-btn:disabled { background: #999; cursor: not-allowed; }
+
+        #font-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .preset-btn {
+            padding: 4px 10px;
+            border-radius: 100px;
+            border: 1px solid rgba(0,0,0,.15);
+            background: rgba(0,0,0,.04);
+            font-size: .6rem;
+            font-weight: 700;
+            color: #333;
+            cursor: pointer;
+            letter-spacing: .04em;
+            transition: background .15s, border-color .15s;
+        }
+
+        .preset-btn:hover {
+            background: rgba(0,0,0,.08);
+            border-color: rgba(0,0,0,.3);
+        }
+
+        .preset-btn.active {
+            background: #000;
+            color: #fff;
+            border-color: #000;
+        }
+
+        #font-status {
+            font-size: .6rem;
+            color: #999;
+            font-weight: 600;
+            min-height: 14px;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
            DEBUG OVERLAY
            Technical metrics: FPS, Delta, Scale, Pan, Velocity, GPU
            Toggle with Shift+~ (backtick)
@@ -360,6 +466,23 @@
 <!-- ═══════════════════════════════════════════════════════════════════════════
      STATUS INDICATORS
      ═══════════════════════════════════════════════════════════════════════════ -->
+<div id="font-picker">
+    <label>Google Font</label>
+    <div id="font-picker-row">
+        <input id="font-input" type="text" value="Orbitron" placeholder="e.g. Roboto" spellcheck="false" autocomplete="off" />
+        <button id="font-load-btn" type="button">Load</button>
+    </div>
+    <div id="font-presets">
+        <button class="preset-btn active" data-font="Orbitron">Orbitron</button>
+        <button class="preset-btn" data-font="Roboto">Roboto</button>
+        <button class="preset-btn" data-font="Inter">Inter</button>
+        <button class="preset-btn" data-font="Playfair Display">Playfair</button>
+        <button class="preset-btn" data-font="Oswald">Oswald</button>
+        <button class="preset-btn" data-font="Pacifico">Pacifico</button>
+    </div>
+    <div id="font-status"></div>
+</div>
+
 <div id="renderer-badge">— WebGL 2 —</div>
 <div id="home-indicator"></div>
 <div id="pan-display">X: +0  Y: +0</div>
@@ -520,7 +643,8 @@
         // Ignore clicks on UI elements
         if (target?.closest?.('.zoom-controls') ||
             target?.closest?.('#ui-overlay') ||
-            target?.closest?.('#kb-hint')) return;
+            target?.closest?.('#kb-hint') ||
+            target?.closest?.('#font-picker')) return;
 
         cancelMomentum();
         drag.active  = true;
@@ -792,9 +916,9 @@
 
         await loadProgrammaticFont('Orbitron');
 
-        // Hide loading screen
+        // Hide loading screen (keep in DOM for font switching reuse)
         document.getElementById('loading').style.opacity = '0';
-        setTimeout(() => document.getElementById('loading').remove(), 800);
+        setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 800);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -956,14 +1080,71 @@
             statusEl.innerText = `ERROR: ${err.message}`;
             statusEl.style.color = '#ef4444';
 
-            // Retry after 3 seconds
+            // Retry with same font after 3 seconds
             setTimeout(() => {
                 statusEl.innerText = 'RETRYING…';
                 statusEl.style.color = '#22d3ee';
-                loadProgrammaticFont('Orbitron');
+                loadProgrammaticFont(fontName);
             }, 3000);
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FONT PICKER WIRING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const fontInput   = document.getElementById('font-input');
+    const fontLoadBtn = document.getElementById('font-load-btn');
+    const fontStatus  = document.getElementById('font-status');
+    const presetBtns  = document.querySelectorAll('.preset-btn');
+
+    async function switchFont(name) {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+
+        fontLoadBtn.disabled = true;
+        fontStatus.style.color = '#999';
+        fontStatus.textContent = `Loading ${trimmed}…`;
+
+        // Show a minimal loading overlay without hiding the scene
+        document.getElementById('loading').style.display = 'flex';
+        document.getElementById('loading').style.opacity = '1';
+        document.getElementById('loading-status').textContent = `GENERATING: ${trimmed}…`;
+        document.getElementById('loading-status').style.color = '#22d3ee';
+
+        // Update preset active state
+        presetBtns.forEach(b => b.classList.toggle('active', b.dataset.font === trimmed));
+
+        try {
+            await loadProgrammaticFont(trimmed);
+            fontStatus.style.color = '#16a34a';
+            fontStatus.textContent = `✓ ${trimmed}`;
+            document.getElementById('ui-overlay').querySelector('h1').textContent = trimmed.toUpperCase();
+        } catch (err) {
+            fontStatus.style.color = '#ef4444';
+            fontStatus.textContent = `✗ ${err.message}`;
+        } finally {
+            fontLoadBtn.disabled = false;
+            document.getElementById('loading').style.opacity = '0';
+            setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 500);
+        }
+    }
+
+    fontLoadBtn.addEventListener('click', () => switchFont(fontInput.value));
+
+    fontInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') switchFont(fontInput.value);
+    });
+
+    presetBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            fontInput.value = btn.dataset.font;
+            switchFont(btn.dataset.font);
+        });
+    });
+
+    // Add font-picker to the click-ignore list for drag/keyboard handlers
+    document.getElementById('font-picker').addEventListener('mousedown', e => e.stopPropagation());
 
     // Start the application
     init();
