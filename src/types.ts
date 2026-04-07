@@ -322,4 +322,8 @@ export interface GoogleFontOptions {
    * @internal
    */
   preferTTF?: boolean;
+  /**
+   * AbortSignal to cancel in-flight requests.
+   */
+  signal?: AbortSignal;
 }
