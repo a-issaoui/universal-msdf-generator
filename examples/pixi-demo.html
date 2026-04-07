@@ -369,6 +369,26 @@
             min-height: 14px;
         }
 
+        #text-input {
+            width: 100%;
+            padding: 7px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(0,0,0,.2);
+            background: rgba(0,0,0,.04);
+            font-size: .8rem;
+            font-weight: 700;
+            color: #000;
+            outline: none;
+            font-family: inherit;
+            resize: none;
+            box-sizing: border-box;
+        }
+
+        #text-input:focus {
+            border-color: #000;
+            background: #fff;
+        }
+
         /* ═══════════════════════════════════════════════════════════════════════
            DEBUG OVERLAY
            Technical metrics: FPS, Delta, Scale, Pan, Velocity, GPU
@@ -448,7 +468,7 @@
      Informational only, no interaction
      ═══════════════════════════════════════════════════════════════════════════ -->
 <div id="ui-overlay">
-    <h1>SQUID GAME</h1>
+    <h1 id="current-font">ORBITRON</h1>
     <p>MSDF Perfect Text Reference</p>
     <p class="secondary">Drag · Scroll · Double-click to reset</p>
 </div>
@@ -481,6 +501,9 @@
         <button class="preset-btn" data-font="Pacifico">Pacifico</button>
     </div>
     <div id="font-status"></div>
+    <label for="text-input" style="margin-top:4px;">Preview Text</label>
+    <textarea id="text-input" rows="2" spellcheck="false">SQUID
+GAME</textarea>
 </div>
 
 <div id="renderer-badge">— WebGL 2 —</div>
@@ -1039,7 +1062,7 @@
              * fill: 0xffffff - Pure white (no tinting, cleanest look)
              */
             const main = new PIXI.BitmapText({
-                text: 'SQUID\nGAME',
+                text: previewText,
                 style: {
                     fontFamily: identity,
                     fontSize: 256,              // ← Matches MSDF generation size
@@ -1074,6 +1097,8 @@
 
             sceneContainer.addChild(group);
             textObject = group;
+            // Expose current text node for live preview text updates
+            textObject._mainText = main;
 
         } catch (err) {
             console.error('💥 Font loading failed:', err);
@@ -1097,6 +1122,10 @@
     const fontLoadBtn = document.getElementById('font-load-btn');
     const fontStatus  = document.getElementById('font-status');
     const presetBtns  = document.querySelectorAll('.preset-btn');
+    const textInput   = document.getElementById('text-input');
+
+    /** Current preview text (shared between font switches) */
+    let previewText = 'SQUID\nGAME';
 
     async function switchFont(name) {
         const trimmed = name.trim();
@@ -1119,7 +1148,7 @@
             await loadProgrammaticFont(trimmed);
             fontStatus.style.color = '#16a34a';
             fontStatus.textContent = `✓ ${trimmed}`;
-            document.getElementById('ui-overlay').querySelector('h1').textContent = trimmed.toUpperCase();
+            document.getElementById('current-font').textContent = trimmed.toUpperCase();
         } catch (err) {
             fontStatus.style.color = '#ef4444';
             fontStatus.textContent = `✗ ${err.message}`;
@@ -1142,6 +1171,18 @@
             switchFont(btn.dataset.font);
         });
     });
+
+    // Live preview text — updates immediately without reloading the font
+    textInput.addEventListener('input', () => {
+        previewText = textInput.value || ' ';
+        if (textObject?._mainText) {
+            textObject._mainText.text = previewText;
+            textObject._mainText.anchor.set(0.5);
+        }
+    });
+
+    // Prevent textarea newline from triggering keyboard shortcuts
+    textInput.addEventListener('keydown', e => e.stopPropagation());
 
     // Add font-picker to the click-ignore list for drag/keyboard handlers
     document.getElementById('font-picker').addEventListener('mousedown', e => e.stopPropagation());
