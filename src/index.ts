@@ -111,6 +111,12 @@ async function executeGen(
   const result = await converter.convert(font.buffer, font.name, options);
   if (result.success) {
     result.fontName = identity;
+    result.fontMetadata = {
+      originalFormat: font.originalFormat,
+      wasConverted: font.wasConverted,
+      compressionRatio: font.metadata?.compressionRatio,
+      decompressionTimeMs: font.metadata?.decompressionTimeMs,
+    };
 
     // Renormalize atlas filenames and layout pages to use identity as the base.
     // The converter names atlases after font.name (e.g. "Roboto"); we need them
@@ -252,30 +258,43 @@ class UniversalMSDFGenerator {
       return results;
     }
 
-    // Concurrency-limited pool — preserves result order
-    let idx = 0;
-    const workers = Array.from({ length: limit }, async () => {
-      while (idx < total) {
-        const i = idx++;
-        await runOne(i);
-      }
-    });
-    await Promise.all(workers);
+    const limitFn = (() => {
+      const queue: Array<() => void> = [];
+      let active = 0;
+      const next = () => {
+        active--;
+        if (queue.length > 0) queue.shift()?.();
+      };
+      return async <T>(fn: () => Promise<T>): Promise<T> => {
+        if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
+        active++;
+        try {
+          return await fn();
+        } finally {
+          next();
+        }
+      };
+    })();
+
+    await Promise.all(sources.map((_, i) => limitFn(() => runOne(i))));
     return results;
   }
 
   /** @deprecated Since v1.5.0. Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromGoogle(n: string, o?: GenerateOptions) {
+    console.warn('[DEPRECATED] generateFromGoogle() is deprecated. Use generate() instead.');
     return this.generate(n, o);
   }
 
   /** @deprecated Since v1.5.0. Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromUrl(u: string, o?: GenerateOptions) {
+    console.warn('[DEPRECATED] generateFromUrl() is deprecated. Use generate() instead.');
     return this.generate(u, o);
   }
 
   /** @deprecated Since v1.5.0. Use {@link generate} directly — source type is auto-detected. Will be removed in v2.0. */
   async generateFromFile(f: string, o?: GenerateOptions) {
+    console.warn('[DEPRECATED] generateFromFile() is deprecated. Use generate() instead.');
     return this.generate(f, o);
   }
 

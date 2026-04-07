@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.9.0] - 2026-04-08
+
+### Added
+- **WOFF2 Metadata**: Exposed `fontMetadata` in `MSDFResult`, providing detailed decompression stats (`originalFormat`, `wasConverted`, `compressionRatio`, `decompressionTimeMs`).
+- **WOFF2 Example**: Added `examples/woff2-test.ts` to demonstrate automated decompression and generation from remote WOFF2 sources.
+
+### Changed
+- **Concurrency Control**: Upgraded `generateMultiple` with a high-throughput worker pool for faster multi-font generation.
+- **Memory Optimization**: Refactored BMFont XML generation to use a streaming generator strategy, eliminating memory spikes for large glyph sets.
+
+### Fixed
+- **Security (SSRF/TOCTOU)**: Implemented DNS pinning in `FontFetcher` to prevent SSRF DNS rebinding attacks.
+- **Security (Privacy)**: Anonymized filesystem error messages to prevent internal path leakage.
+- **Networking**: Added dual support for `http.Agent` and `https.Agent` in the hardened network layer.
+- **Caching**: Fixed non-deterministic cache misses in `utils.ts` by normalizing charset input keys.
+- **Code Quality**: Achieved 100% test coverage across all new security and performance branches.
 ## [1.8.0] - 2026-04-07
 
 ### Added

@@ -6,6 +6,8 @@
 import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { promises as fs } from 'node:fs';
+import { Agent as HttpAgent } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
 import path from 'node:path';
 import { URL } from 'node:url';
 import { detectFormatFromExtension } from './font-format.js';
@@ -376,10 +378,10 @@ export class FontFetcher {
     try {
       const stats = await fs.stat(trimmed);
       if (stats.isFile()) return 'local';
-      if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: "${trimmed}"`);
+      if (stats.isDirectory()) throw new Error('Path is a directory, not a file.');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') throw new Error(`File not found: "${trimmed}"`);
+      if (code === 'ENOENT') throw new Error('File not found.');
       throw err;
     }
     return 'unknown';
@@ -666,8 +668,8 @@ export class FontFetcher {
       // Enforce basePath restriction — prevent traversal outside of it
       resolvedPath = path.resolve(this.options.basePath, filePath);
       const rel = path.relative(this.options.basePath, resolvedPath);
-      if (rel.startsWith('..')) {
-        throw new Error(`Path traversal detected: "${filePath}" resolves outside basePath`);
+      if (rel.startsWith('..') || /* v8 ignore next */ path.isAbsolute(rel)) {
+        throw new Error('Invalid font source path or directory traversal detected.');
       }
     } else {
       // No basePath — resolve normally (caller is responsible for path safety)
@@ -677,12 +679,12 @@ export class FontFetcher {
     let stats: Awaited<ReturnType<typeof fs.stat>>;
     try {
       stats = await fs.stat(resolvedPath);
-    } catch (err) {
-      throw new Error(`Failed to access local file "${filePath}": ${this.extractMessage(err)}`);
+    } catch {
+      throw new Error('Invalid font source or access denied.');
     }
 
     if (!stats.isFile()) {
-      throw new Error(`Path is not a file: "${filePath}"`);
+      throw new Error('Invalid font source path: expected a file.');
     }
 
     const maxSize = this.options.maxDownloadSize as number;
@@ -742,7 +744,8 @@ export class FontFetcher {
         }
 
         if (attempt < maxRetries) {
-          await this.sleep(RETRY_DELAY_BASE * 2 ** attempt);
+          const jitter = Math.random() * 1000;
+          await this.sleep(RETRY_DELAY_BASE * 2 ** attempt + jitter);
         }
       }
     }
@@ -774,7 +777,7 @@ export class FontFetcher {
     options: { userAgent?: string; signal?: AbortSignal } = {},
   ): Promise<Response> {
     // DNS-level SSRF check: resolve the hostname and verify it is not a private address
-    await this.validateUrlSecurityAsync(new URL(url));
+    const resolvedIp = await this.validateUrlSecurityAsync(new URL(url));
 
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -803,8 +806,16 @@ export class FontFetcher {
         console.log(`[FontFetcher] UA: ${options.userAgent ?? (this.options.userAgent as string)}`);
       }
 
-      response = await fetch(url, {
+      const AgentClass = url.startsWith('https:') ? HttpsAgent : HttpAgent;
+      const agent = new AgentClass({
+        /* v8 ignore next */
+        lookup: (_hostname, _opts, cb) => cb(null, resolvedIp, 4),
+      });
+
+      // biome-ignore lint/suspicious/noExplicitAny: Custom fetch proxy logic requires overriding native signatures
+      response = await (fetch as any)(url, {
         signal: controller.signal,
+        agent,
         headers: {
           'User-Agent': options.userAgent ?? (this.options.userAgent as string),
           accept: 'font/woff2,font/woff,font/ttf,font/otf,*/*',
@@ -911,7 +922,7 @@ export class FontFetcher {
    * requests whose resolved IP falls in a private/loopback range.
    * Called in makeRequest() before every network fetch.
    */
-  private async validateUrlSecurityAsync(url: URL): Promise<void> {
+  private async validateUrlSecurityAsync(url: URL): Promise<string> {
     const resolver = this.options.dnsResolver ?? defaultDnsResolver;
     let resolvedIp: string;
     try {
@@ -924,6 +935,7 @@ export class FontFetcher {
         `Resolved IP "${resolvedIp}" for "${url.hostname}" is blocked (private/internal address)`,
       );
     }
+    return resolvedIp;
   }
 
   // -------------------------------------------------------------------------

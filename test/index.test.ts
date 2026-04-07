@@ -251,6 +251,22 @@ describe('UniversalMSDFGenerator', () => {
     expect(files.some((f) => f.includes('F-1.png'))).toBe(true);
   });
 
+  it('success path: populates fontMetadata from FontData', async () => {
+    mockFetch.mockResolvedValueOnce({
+      buffer: Buffer.alloc(0),
+      name: 'f.ttf',
+      source: 'url',
+      format: 'ttf',
+      metadata: { compressionRatio: 0.5, decompressionTimeMs: 100 },
+    });
+    const r = await generator.generate('MetaTest');
+    expect(r.success).toBe(true);
+    if (r.success && !r.cached) {
+      expect(r.fontMetadata?.compressionRatio).toBe(0.5);
+      expect(r.fontMetadata?.decompressionTimeMs).toBe(100);
+    }
+  });
+
   it('success path: handles atlas count fallback in expected files', async () => {
     const files = MSDFUtils.getExpectedFiles('./out', 'F', 'json', 2);
     expect(files.some((f) => f.includes('F-1.png'))).toBe(true);

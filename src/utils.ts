@@ -205,31 +205,54 @@ const COMMON_CHARSETS = {
     ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя',
   custom: (chars: string) => chars.split(''),
 };
+const CHARSET_CACHE = new Map<string, string>();
+function resolveStringCharset(c: string): string {
+  if (c === 'ascii') return COMMON_CHARSETS.ascii();
+  if (c === 'alphanumeric') return COMMON_CHARSETS.alphanumeric();
+  if (c === 'latin') return COMMON_CHARSETS.latin();
+  if (c === 'cyrillic') return COMMON_CHARSETS.cyrillic();
+  if (c === 'custom') {
+    throw new Error('"custom" is a custom charset provider, not a preset name.');
+  }
+  return c;
+}
 
 function resolveCharset(
   c: string | (string | number)[] | Set<string | number> | undefined,
 ): string {
-  if (!c) return COMMON_CHARSETS.latin();
-  if (typeof c === 'string') {
-    if (c === 'ascii') return COMMON_CHARSETS.ascii();
-    if (c === 'alphanumeric') return COMMON_CHARSETS.alphanumeric();
-    if (c === 'latin') return COMMON_CHARSETS.latin();
-    if (c === 'cyrillic') return COMMON_CHARSETS.cyrillic();
-    if (c === 'custom')
-      throw new Error('"custom" is a custom charset provider, not a preset name.');
-    return c;
-  }
-  if (Array.isArray(c)) {
-    return (c as (string | number)[])
+  let cacheKey: string;
+  if (!c) cacheKey = 'default-latin';
+  else if (typeof c === 'string') cacheKey = c;
+  else if (Array.isArray(c)) {
+    const sorted = [...c].sort();
+    cacheKey = `arr:${JSON.stringify(sorted)}`;
+  } else if (c instanceof Set) {
+    const sorted = Array.from(c).sort();
+    cacheKey = `set:${JSON.stringify(sorted)}`;
+  } else cacheKey = String(c);
+
+  const cached = CHARSET_CACHE.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let result: string;
+  if (!c) {
+    result = COMMON_CHARSETS.latin();
+  } else if (typeof c === 'string') {
+    result = resolveStringCharset(c);
+  } else if (Array.isArray(c)) {
+    result = (c as (string | number)[])
       .map((item) => (typeof item === 'number' ? String.fromCodePoint(item) : item))
       .join('');
-  }
-  if (c instanceof Set) {
-    return Array.from(c)
+  } else if (c instanceof Set) {
+    result = Array.from(c)
       .map((item) => (typeof item === 'number' ? String.fromCodePoint(item) : item))
       .join('');
+  } else {
+    result = String(c);
   }
-  return String(c);
+
+  CHARSET_CACHE.set(cacheKey, result);
+  return result;
 }
 
 // ---------------------------------------------------------------------------

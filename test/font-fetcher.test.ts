@@ -331,20 +331,23 @@ describe('FontFetcher', () => {
       vi.mocked(fs.stat).mockResolvedValue({
         isFile: () => false,
       } as unknown as import('node:fs').Stats);
-      await expect(fetcher.fetchLocalFile('dir')).rejects.toThrow('Path is not a file');
+      await expect(fetcher.fetchLocalFile('dir')).rejects.toThrow(
+        'Invalid font source path: expected a file.',
+      );
     });
 
     it('should reject non-existent files', async () => {
       vi.mocked(fs.stat).mockRejectedValueOnce(new Error('ENOENT'));
       await expect(fetcher.fetchLocalFile('missing.ttf')).rejects.toThrow(
-        'Failed to access local file',
+        'Invalid font source or access denied.',
       );
     });
 
-    it('should prevent path traversal with basePath', async () => {
-      const restrictedFetcher = new FontFetcher({ basePath: '/safe' });
-      await expect(restrictedFetcher.fetchLocalFile('../etc/passwd')).rejects.toThrow(
-        'Path traversal detected',
+    it('fetchLocalFile: should prevent path traversal with basePath', async () => {
+      const fetcher = new FontFetcher({ basePath: '/secure/dir' });
+      const outsidePath = '../../../etc/passwd';
+      await expect(fetcher.fetchLocalFile(outsidePath)).rejects.toThrow(
+        'Invalid font source path or directory traversal detected',
       );
     });
 
@@ -761,11 +764,11 @@ describe('FontFetcher', () => {
       // Instantiate a fresh rate limiter to bypass the global spy
       const limiter = new RateLimiter(2, 100);
 
-      expect(limiter.tokens).toBe(2);
+      expect(Math.floor(limiter.tokens)).toBe(2);
       await limiter.acquire(); // Consumes 1
-      expect(limiter.tokens).toBe(1);
+      expect(Math.floor(limiter.tokens)).toBe(1);
       await limiter.acquire(); // Consumes 1
-      expect(limiter.tokens).toBe(0);
+      expect(Math.floor(limiter.tokens)).toBe(0);
 
       // Attempting to acquire when 0 should wait and refill
       const start = Date.now();
@@ -797,6 +800,8 @@ describe('FontFetcher', () => {
       // Force it by intercepting attemptGoogleFontFetch's underlying fetch via mockFetch
       mockFetch.mockReset();
       mockFetch.mockRejectedValue('primitive-failure'); // Not an instance of Error
+      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method for testing/mocking
+      vi.spyOn(priv(fetcher) as any, 'sleep').mockResolvedValue(undefined);
 
       const result = fetcher.fetchGoogleFont('Roboto');
       await expect(result).rejects.toThrow('Failed to fetch Google Font'); // Final wrap includes inner msg

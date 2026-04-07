@@ -11,7 +11,7 @@ vi.mock('msdfgen-wasm', () => ({
 
 vi.mock('node:fs', () => ({
   readFileSync: vi.fn().mockReturnValue(Buffer.alloc(64)),
-  promises: { readFile: vi.fn(), stat: vi.fn() },
+  promises: { readFile: vi.fn().mockResolvedValue(Buffer.alloc(64)), stat: vi.fn() },
 }));
 
 vi.mock('node:module', () => ({

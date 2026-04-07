@@ -258,6 +258,14 @@ export interface MSDFSuccess {
     engine: string;
   };
 
+  /** Decompression and format-level metadata from the source font. */
+  fontMetadata?: {
+    originalFormat?: string;
+    wasConverted?: boolean;
+    compressionRatio?: number;
+    decompressionTimeMs?: number;
+  };
+
   /** List of absolute paths to saved files */
   savedFiles?: string[];
   /** Absolute path to the saved font binary, populated when saveFontFile is true */

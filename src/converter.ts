@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { FontMetrics, PackedGlyphsBin } from 'msdfgen-wasm';
 import { Msdfgen } from 'msdfgen-wasm';
@@ -158,7 +158,7 @@ class MSDFConverter {
   private async _doInitialize(): Promise<void> {
     const require = createRequire(import.meta.url);
     const wasmPath = require.resolve('msdfgen-wasm/wasm');
-    const buf = readFileSync(wasmPath);
+    const buf = await fs.readFile(wasmPath);
     // Ensure we have a standalone ArrayBuffer (Buffer may share its underlying buffer)
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     this.gen = await Msdfgen.create(ab);
@@ -196,13 +196,9 @@ class MSDFConverter {
 
         // Resolve charset to an array of unique codepoints
         const charString = resolveCharset(charset);
-        const codepoints = [
-          ...new Set(
-            [...charString]
-              .map((c) => c.codePointAt(0))
-              .filter((cp): cp is number => cp !== undefined),
-          ),
-        ];
+        const codepoints = Array.from(new Set(charString), (c) => c.codePointAt(0)).filter(
+          (cp): cp is number => cp !== undefined,
+        );
 
         if (codepoints.length > 0) {
           gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });

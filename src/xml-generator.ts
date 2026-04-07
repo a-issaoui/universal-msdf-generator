@@ -1,4 +1,4 @@
-import type { MSDFGlyph, MSDFLayout } from './types.js';
+import type { MSDFLayout } from './types.js';
 
 /**
  * Generates AngelCode BMFont XML (.fnt) from an MSDFLayout.
@@ -18,73 +18,38 @@ export class XMLGenerator {
       .replace(/>/g, '&gt;');
   }
 
-  /**
-   * Generates a standard BMFont XML string from layout data.
-   *
-   * @param layout   - The MSDF layout returned by MSDFConverter.
-   * @param fontName - Used as the `face` attribute fallback when `layout.info.face` is empty.
-   * @returns AngelCode-compliant XML string.
-   */
-  public static generate(layout: MSDFLayout, fontName: string): string {
+  public static *generateStream(layout: MSDFLayout, fontName: string): Generator<string> {
     const { info, common, chars, kernings, distanceField } = layout;
     const esc = XMLGenerator.escapeAttr;
 
     const faceName = info.face || fontName;
     const charsetStr = Array.isArray(info.charset) ? info.charset.join(',') : (info.charset ?? '');
 
-    const lines: string[] = [
-      '<?xml version="1.0"?>',
-      '<font>',
-      [
-        '  <info',
-        `face="${esc(faceName)}"`,
-        `size="${esc(info.size)}"`,
-        `bold="${esc(info.bold)}"`,
-        `italic="${esc(info.italic)}"`,
-        `charset="${esc(charsetStr)}"`,
-        `unicode="${esc(info.unicode)}"`,
-        `stretchH="${esc(info.stretchH)}"`,
-        `smooth="${esc(info.smooth)}"`,
-        `aa="${esc(info.aa)}"`,
-        `padding="${esc((info.padding ?? [0, 0, 0, 0]).join(','))}"`,
-        `spacing="${esc((info.spacing ?? [0, 0]).join(','))}"`,
-        `outline="${esc(info.outline ?? 0)}"/>`,
-      ].join(' '),
-      [
-        '  <common',
-        `lineHeight="${esc(common.lineHeight)}"`,
-        `base="${esc(common.base)}"`,
-        `scaleW="${esc(common.scaleW)}"`,
-        `scaleH="${esc(common.scaleH)}"`,
-        `pages="${esc(layout.pages.length)}"`,
-        `packed="${esc(common.packed)}"`,
-        `alphaChnl="${esc(common.alphaChnl)}"`,
-        `redChnl="${esc(common.redChnl)}"`,
-        `greenChnl="${esc(common.greenChnl)}"`,
-        `blueChnl="${esc(common.blueChnl)}"/>`,
-      ].join(' '),
-      '  <pages>',
-      ...layout.pages.map((pageFile: string, index: number) => {
-        return `    <page id="${index}" file="${esc(pageFile)}"/>`;
-      }),
-      '  </pages>',
-      `  <distanceField fieldType="${esc(distanceField.fieldType)}" distanceRange="${esc(distanceField.distanceRange)}"/>`,
-      `  <chars count="${esc(chars.length)}">`,
-      ...chars.map(
-        (char: MSDFGlyph) =>
-          `    <char id="${char.id}" x="${char.x}" y="${char.y}" width="${char.width}" height="${char.height}" xoffset="${char.xoffset}" yoffset="${char.yoffset}" xadvance="${char.xadvance}" page="${char.page}" chnl="${char.chnl}"/>`,
-      ),
-      '  </chars>',
-      `  <kernings count="${esc(kernings.length)}">`,
-      ...kernings.map(
-        (k: { first: number; second: number; amount: number }) =>
-          `    <kerning first="${k.first}" second="${k.second}" amount="${k.amount}"/>`,
-      ),
-      '  </kernings>',
-      '</font>',
-    ];
+    yield '<?xml version="1.0"?>';
+    yield '<font>';
+    yield `  <info face="${esc(faceName)}" size="${esc(info.size)}" bold="${esc(info.bold)}" italic="${esc(info.italic)}" charset="${esc(charsetStr)}" unicode="${esc(info.unicode)}" stretchH="${esc(info.stretchH)}" smooth="${esc(info.smooth)}" aa="${esc(info.aa)}" padding="${esc((info.padding ?? [0, 0, 0, 0]).join(','))}" spacing="${esc((info.spacing ?? [0, 0]).join(','))}" outline="${esc(info.outline ?? 0)}"/>`;
+    yield `  <common lineHeight="${esc(common.lineHeight)}" base="${esc(common.base)}" scaleW="${esc(common.scaleW)}" scaleH="${esc(common.scaleH)}" pages="${esc(layout.pages.length)}" packed="${esc(common.packed)}" alphaChnl="${esc(common.alphaChnl)}" redChnl="${esc(common.redChnl)}" greenChnl="${esc(common.greenChnl)}" blueChnl="${esc(common.blueChnl)}"/>`;
+    yield '  <pages>';
+    for (let index = 0; index < layout.pages.length; index++) {
+      yield `    <page id="${index}" file="${esc(layout.pages[index])}"/>`;
+    }
+    yield '  </pages>';
+    yield `  <distanceField fieldType="${esc(distanceField.fieldType)}" distanceRange="${esc(distanceField.distanceRange)}"/>`;
+    yield `  <chars count="${esc(chars.length)}">`;
+    for (const char of chars) {
+      yield `    <char id="${char.id}" x="${char.x}" y="${char.y}" width="${char.width}" height="${char.height}" xoffset="${char.xoffset}" yoffset="${char.yoffset}" xadvance="${char.xadvance}" page="${char.page}" chnl="${char.chnl}"/>`;
+    }
+    yield '  </chars>';
+    yield `  <kernings count="${esc(kernings.length)}">`;
+    for (const k of kernings) {
+      yield `    <kerning first="${k.first}" second="${k.second}" amount="${k.amount}"/>`;
+    }
+    yield '  </kernings>';
+    yield '</font>';
+  }
 
-    return lines.join('\n');
+  public static generate(layout: MSDFLayout, fontName: string): string {
+    return [...XMLGenerator.generateStream(layout, fontName)].join('\n');
   }
 }
 
