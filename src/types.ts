@@ -81,7 +81,7 @@ export interface MSDFLayout {
 /**
  * Sources from which a font can be loaded.
  */
-export type FontSource = string | URL | Buffer | ArrayBuffer;
+export type FontSource = string | URL | Buffer | ArrayBuffer | ArrayBufferView;
 
 /**
  * Configuration for a pre-defined or custom charset.
@@ -257,6 +257,8 @@ export interface FetchOptions {
   timeout?: number;
   /** Custom User-Agent header */
   userAgent?: string;
+  /** AbortSignal to cancel in-flight fetch requests */
+  signal?: AbortSignal;
 }
 
 /**

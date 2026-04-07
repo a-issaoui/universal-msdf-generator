@@ -70,12 +70,60 @@ describe('FontFetcher', () => {
       expect(await priv(fetcher).detectSourceType('not-a-font.txt')).toBe('unknown');
     });
 
+    it('should detect bare filename with extension as local via fallback stat', async () => {
+      // "font.ttf" has no path indicators and doesn't match Google name regex (has dot)
+      // → falls through to fallback stat check
+      vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true } as unknown as Awaited<
+        ReturnType<typeof fs.stat>
+      >);
+      expect(await priv(fetcher).detectSourceType('font.ttf')).toBe('local');
+    });
+
     it('should detect buffers', async () => {
       expect(await priv(fetcher).detectSourceType(Buffer.alloc(10))).toBe('buffer');
       expect(await priv(fetcher).detectSourceType(new ArrayBuffer(10) as unknown as string)).toBe(
         'buffer',
       );
-      expect(await priv(fetcher).detectSourceType({ byteLength: 10 })).toBe('buffer');
+    });
+
+    it('should detect TypedArray (Uint8Array) as buffer', async () => {
+      expect(
+        await priv(fetcher).detectSourceType(new Uint8Array(10) as unknown as FontSource),
+      ).toBe('buffer');
+    });
+
+    it('should NOT treat plain objects with byteLength as buffer', async () => {
+      // Old heuristic ({ byteLength: N }) was fragile — any object matched.
+      // Now only real Buffer / ArrayBuffer / ArrayBufferView are accepted.
+      expect(await priv(fetcher).detectSourceType({ byteLength: 10 })).toBe('unknown');
+    });
+
+    it('should treat whitespace-only string as unknown (not a Google font name)', async () => {
+      vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+      expect(await priv(fetcher).detectSourceType('   ')).toBe('unknown');
+    });
+
+    it('should treat digits-only string as unknown (not a Google font name)', async () => {
+      vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+      expect(await priv(fetcher).detectSourceType('123')).toBe('unknown');
+    });
+
+    it('should treat hyphens-only string as unknown (not a Google font name)', async () => {
+      vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+      expect(await priv(fetcher).detectSourceType('---')).toBe('unknown');
+    });
+
+    it('should stat path-like strings before checking Google heuristic', async () => {
+      vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true } as unknown as Awaited<
+        ReturnType<typeof fs.stat>
+      >);
+      // "./Roboto Regular" starts with ./ — goes to stat, not Google font heuristic
+      expect(await priv(fetcher).detectSourceType('./Roboto Regular')).toBe('local');
+    });
+
+    it('should return unknown for path-like strings that do not exist', async () => {
+      vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+      expect(await priv(fetcher).detectSourceType('/nonexistent/font')).toBe('unknown');
     });
   });
 
@@ -122,17 +170,30 @@ describe('FontFetcher', () => {
       expect(result.source).toBe('buffer');
     });
 
-    it('should convert raw objects to buffers', async () => {
-      const data = Buffer.from([1, 2, 3]);
-      const result = await fetcher.fetch(data);
-      expect(Buffer.isBuffer(result.buffer)).toBe(true);
-      expect(result.source).toBe('buffer');
-    });
-
     it('should handle raw ArrayBuffer input', async () => {
       const arrayBuffer = new ArrayBuffer(10);
       const result = await fetcher.fetch(arrayBuffer as unknown as FontSource);
       expect(Buffer.isBuffer(result.buffer)).toBe(true);
+      expect(result.source).toBe('buffer');
+    });
+
+    it('should handle Uint8Array input', async () => {
+      const arr = new Uint8Array([1, 2, 3, 4, 5]);
+      const result = await fetcher.fetch(arr as unknown as FontSource);
+      expect(Buffer.isBuffer(result.buffer)).toBe(true);
+      expect(result.buffer).toEqual(Buffer.from([1, 2, 3, 4, 5]));
+      expect(result.source).toBe('buffer');
+    });
+
+    it('should correctly handle Uint8Array sub-views (byteOffset > 0)', async () => {
+      // Backing buffer has 8 bytes; view covers bytes 2–5 (length 4)
+      const backing = new ArrayBuffer(8);
+      const full = new Uint8Array(backing);
+      full.set([10, 20, 30, 40, 50, 60, 70, 80]);
+      const subView = new Uint8Array(backing, 2, 4); // [30, 40, 50, 60]
+
+      const result = await fetcher.fetch(subView as unknown as FontSource);
+      expect([...result.buffer]).toEqual([30, 40, 50, 60]);
     });
 
     it('should throw for unknown types', async () => {
@@ -363,6 +424,22 @@ describe('FontFetcher', () => {
       const result = priv(fetcher).extractFontNameFromUrl('https://ex.com/Font.ttf?v=1');
       expect(result).toBe('Font');
     });
+
+    it('should reject file:// protocol', async () => {
+      await expect(fetcher.fetchFromUrl('file:///etc/passwd')).rejects.toThrow(
+        'protocol "file:" is not allowed',
+      );
+    });
+
+    it('should reject ftp:// protocol', async () => {
+      await expect(fetcher.fetchFromUrl('ftp://example.com/font.ttf')).rejects.toThrow(
+        'protocol "ftp:" is not allowed',
+      );
+    });
+
+    it('should reject invalid URL string', async () => {
+      await expect(fetcher.fetchFromUrl('not a url at all')).rejects.toThrow('Invalid URL');
+    });
   });
 
   describe('fetchLocalFile', () => {
@@ -404,6 +481,24 @@ describe('FontFetcher', () => {
       );
 
       await expect(priv(fetcher).makeRequest('http://slow.com')).rejects.toThrow('Request failed');
+    });
+
+    it('should use caller-supplied AbortSignal when provided in FetchOptions', async () => {
+      const controller = new AbortController();
+      const customFetcher = new FontFetcher({ signal: controller.signal });
+
+      // Capture the signal passed to fetch (second argument, init object)
+      let capturedSignal: AbortSignal | undefined;
+      mockFetch.mockImplementation((_url: string, init: RequestInit) => {
+        capturedSignal = init?.signal as AbortSignal;
+        return Promise.resolve({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+        });
+      });
+
+      await customFetcher.fetchFromUrl('https://example.com/font.ttf');
+      expect(capturedSignal).toBe(controller.signal);
     });
   });
 });

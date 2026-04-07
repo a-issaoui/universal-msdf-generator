@@ -41,8 +41,17 @@ class FontFetcher {
         if (Buffer.isBuffer(source)) {
           return { buffer: source, name: 'buffer-font', source: 'buffer' };
         }
+        if (ArrayBuffer.isView(source)) {
+          // Correctly handles sub-views (e.g. Uint8Array slices from WASM interop)
+          return {
+            buffer: Buffer.from(source.buffer, source.byteOffset, source.byteLength),
+            name: 'buffer-font',
+            source: 'buffer',
+          };
+        }
+        // Plain ArrayBuffer
         return {
-          buffer: Buffer.from(source as unknown as ArrayBuffer),
+          buffer: Buffer.from(source as ArrayBuffer),
           name: 'buffer-font',
           source: 'buffer',
         };
@@ -53,35 +62,83 @@ class FontFetcher {
 
   /**
    * Heuristically determines the type of a given font source.
+   *
+   * Detection order (explicit beats heuristic):
+   * 1. URL object                             → 'url'
+   * 2. Buffer / ArrayBuffer / ArrayBufferView → 'buffer'
+   * 3. String (delegated to detectStringSource)
+   * 4. Anything else                          → 'unknown'
    */
   private async detectSourceType(
     source: FontSource,
   ): Promise<'google' | 'url' | 'local' | 'buffer' | 'unknown'> {
     if (source instanceof URL) return 'url';
 
-    if (typeof source === 'string') {
-      // Google Font name: only letters, digits, spaces, hyphens — no file extension
-      if (/^[a-zA-Z0-9\s-]+$/.test(source) && !source.includes('.')) return 'google';
+    // Binary buffers checked before string so TypedArrays aren't misclassified
+    if (Buffer.isBuffer(source) || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+      return 'buffer';
+    }
 
-      if (source.startsWith('http://') || source.startsWith('https://')) return 'url';
+    if (typeof source === 'string') return this.detectStringSource(source);
 
+    return 'unknown';
+  }
+
+  /**
+   * Detects the source type for string inputs.
+   *
+   * Order:
+   * a. http(s):// prefix      → 'url'
+   * b. Path-like (./, ../, /) → stat → 'local' | 'unknown'
+   * c. Google font name heuristic → 'google'
+   * d. fs.stat fallback (bare filename with extension) → 'local' | 'unknown'
+   */
+  private async detectStringSource(
+    source: string,
+  ): Promise<'google' | 'url' | 'local' | 'unknown'> {
+    // a. Explicit remote URL
+    if (source.startsWith('http://') || source.startsWith('https://')) return 'url';
+
+    // b. Explicit path-like string — stat first, skip Google heuristic
+    const isPathLike =
+      source.startsWith('./') || source.startsWith('../') || path.isAbsolute(source);
+
+    if (isPathLike) {
       try {
         const stats = await fs.stat(source);
         if (stats.isFile()) return 'local';
       } catch {
-        // Not a detectable file path — fall through
+        // Path-like but not a file — treat as unknown rather than Google font
       }
+      return 'unknown';
     }
 
-    if (
-      Buffer.isBuffer(source) ||
-      source instanceof ArrayBuffer ||
-      (typeof source === 'object' && source !== null && 'byteLength' in (source as object))
-    ) {
-      return 'buffer';
+    // c. Google font name heuristic (must contain at least one letter, ≥2 non-space chars)
+    if (this.isGoogleFontName(source)) return 'google';
+
+    // d. Fallback: maybe a bare filename with extension, check stat
+    try {
+      const stats = await fs.stat(source);
+      if (stats.isFile()) return 'local';
+    } catch {
+      // Not a detectable file path — fall through
     }
 
     return 'unknown';
+  }
+
+  /**
+   * Returns true when a string looks like a Google Fonts family name.
+   * Requires at least one ASCII letter and at least two non-space characters
+   * to avoid treating bare numbers, dashes, or whitespace as font names.
+   */
+  private isGoogleFontName(s: string): boolean {
+    return (
+      /^[a-zA-Z0-9\s-]+$/.test(s) && // only letters, digits, spaces, hyphens
+      !s.includes('.') && // no file extension
+      /[a-zA-Z]/.test(s) && // at least one letter
+      s.trim().length >= 2 // at least 2 meaningful characters
+    );
   }
 
   /**
@@ -187,7 +244,10 @@ class FontFetcher {
 
     if (parsed.length === 0) return null;
 
-    // Apply format preference filter (exact extension match — avoids .woff matching .woff2)
+    // Apply format preference filter (exact extension match — avoids .woff matching .woff2).
+    // When format is 'any', formatFiltered equals parsed (all blocks are candidates).
+    // For specific formats, only matching blocks are candidates — prevents downloading
+    // an unsupported format (e.g. woff2) when the requested format isn't present.
     const formatFiltered =
       preferredFormat !== 'any'
         ? parsed.filter((b) => {
@@ -199,9 +259,8 @@ class FontFetcher {
           })
         : parsed;
 
-    // When format is 'any', formatFiltered already equals parsed (all blocks).
-    // For specific formats, only matching blocks are candidates (strict — no WOFF2 fallback).
     const candidates = formatFiltered;
+    if (candidates.length === 0) return null;
 
     // Prefer the block that covers U+0041 (Basic Latin) by checking the unicode-range
     // descriptor for a range that spans it.
@@ -224,20 +283,22 @@ class FontFetcher {
       });
     });
 
-    if (candidates.length === 0) return null;
-
     // Fall back to the last candidate — Google places the primary Latin subset last
     return (latinBlock ?? candidates[candidates.length - 1]).url;
   }
 
   /**
    * Downloads a font file from a generic remote URL.
+   * Only http: and https: protocols are accepted — file:, ftp:, etc. are rejected
+   * to prevent unintended local filesystem access via the fetch API.
    */
   async fetchFromUrl(
     url: string | URL,
     options: { format?: string; name?: string } = {},
   ): Promise<FontData> {
     const urlStr = url instanceof URL ? url.href : url;
+    this.assertHttpUrl(urlStr);
+
     const format = options.format ?? this.detectFormatFromUrl(urlStr);
     const name = options.name ?? this.extractFontNameFromUrl(urlStr);
 
@@ -257,6 +318,24 @@ class FontFetcher {
       };
     } catch (error: unknown) {
       throw new Error(`Failed to fetch font from URL: ${this.extractMessage(error)}`);
+    }
+  }
+
+  /**
+   * Validates that a URL uses http: or https: protocol.
+   * Rejects file:, ftp:, data:, and other schemes that could be misused.
+   */
+  private assertHttpUrl(urlStr: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(urlStr);
+    } catch {
+      throw new Error(`Invalid URL: "${urlStr}"`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(
+        `URL protocol "${parsed.protocol}" is not allowed — only http: and https: are supported`,
+      );
     }
   }
 
@@ -281,6 +360,8 @@ class FontFetcher {
 
   /**
    * Internal HTTP request helper with timeout safety.
+   * When the caller provides a `signal` in FetchOptions, it takes precedence over
+   * the internal timeout controller, allowing external cancellation.
    * Uses a finally block to guarantee the timeout handle is always cleared,
    * preventing Node.js from staying alive due to a dangling timer.
    */
@@ -290,7 +371,7 @@ class FontFetcher {
 
     try {
       const response = await fetch(url, {
-        signal: controller.signal,
+        signal: this.options.signal ?? controller.signal,
         headers: { 'User-Agent': userAgent ?? (this.options.userAgent as string) },
       });
       return response;
