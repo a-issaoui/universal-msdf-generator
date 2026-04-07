@@ -493,12 +493,12 @@
         <button id="font-load-btn" type="button">Load</button>
     </div>
     <div id="font-presets">
-        <button class="preset-btn active" data-font="Orbitron">Orbitron</button>
-        <button class="preset-btn" data-font="Roboto">Roboto</button>
-        <button class="preset-btn" data-font="Inter">Inter</button>
-        <button class="preset-btn" data-font="Playfair Display">Playfair</button>
-        <button class="preset-btn" data-font="Oswald">Oswald</button>
-        <button class="preset-btn" data-font="Pacifico">Pacifico</button>
+        <button type="button" class="preset-btn active" data-font="Orbitron">Orbitron</button>
+        <button type="button" class="preset-btn" data-font="Roboto">Roboto</button>
+        <button type="button" class="preset-btn" data-font="Inter">Inter</button>
+        <button type="button" class="preset-btn" data-font="Playfair Display">Playfair</button>
+        <button type="button" class="preset-btn" data-font="Oswald">Oswald</button>
+        <button type="button" class="preset-btn" data-font="Pacifico">Pacifico</button>
     </div>
     <div id="font-status"></div>
     <label for="text-input" style="margin-top:4px;">Preview Text</label>
@@ -1142,7 +1142,7 @@ GAME</textarea>
         document.getElementById('loading-status').style.color = '#22d3ee';
 
         // Update preset active state
-        presetBtns.forEach(b => b.classList.toggle('active', b.dataset.font === trimmed));
+        for (const b of presetBtns) b.classList.toggle('active', b.dataset.font === trimmed);
 
         try {
             await loadProgrammaticFont(trimmed);

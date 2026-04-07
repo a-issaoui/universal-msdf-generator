@@ -87,47 +87,72 @@ class FontFetcher {
   /**
    * Retrieves a font binary from the Google Fonts library.
    *
-   * Improvement over the previous version: the Google Fonts CSS v2 response contains
-   * multiple @font-face blocks — one per Unicode range subset (cyrillic-ext, latin-ext,
-   * latin, etc.). The old code returned the first URL it found, which is almost always
-   * the "cyrillic-ext" block. This version parses each @font-face block individually
-   * and prefers the block whose unicode-range descriptor contains the Basic Latin range
-   * (U+0020–U+007E), falling back to the first block when no explicit Latin range is found.
+   * Strategy (in order):
+   * 1. IE 11 UA → Google returns WOFF (supported by msdfgen-wasm).
+   * 2. Old Android UA → Google returns TTF (also supported). Handles newer fonts
+   *    like Playwrite that dropped legacy WOFF in favour of WOFF2-only delivery.
+   *
+   * WOFF2 is never attempted — msdfgen-wasm's WASM binary does not include
+   * brotli decompression, so WOFF2 buffers would be rejected at parse time.
    */
   async fetchGoogleFont(fontName: string, options: GoogleFontOptions = {}): Promise<FontData> {
-    const { weight = '400', style = 'normal', format = 'woff' } = options;
+    const { weight = '400', style = 'normal' } = options;
 
     const ital = style === 'italic' ? '1' : '0';
     const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
       fontName,
     )}:ital,wght@${ital},${weight}&display=swap`;
 
-    try {
-      const cssResponse = await this.makeRequest(cssUrl);
-      const css = await cssResponse.text();
+    // UA → expected format pairs tried in order
+    const attempts: Array<{ ua: string; format: string }> = [
+      {
+        // IE 11 — Google returns WOFF for this UA
+        ua: 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
+        format: 'woff',
+      },
+      {
+        // Android 2.2 — Google returns TTF for this UA (fallback for WOFF2-only fonts)
+        ua: 'Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1',
+        format: 'ttf',
+      },
+    ];
 
-      const fontUrl = this.extractLatinFontUrl(css, format);
-      if (!fontUrl) {
-        throw new Error(`Could not extract font URL for "${fontName}" (format: ${format})`);
+    const errors: string[] = [];
+
+    for (const attempt of attempts) {
+      try {
+        const cssResponse = await this.makeRequest(cssUrl, attempt.ua);
+        const css = await cssResponse.text();
+
+        const fontUrl = this.extractLatinFontUrl(css, attempt.format);
+        if (!fontUrl) {
+          errors.push(`no ${attempt.format} URL in CSS`);
+          continue;
+        }
+
+        const fontResponse = await this.makeRequest(fontUrl, attempt.ua);
+        if (!fontResponse.ok) {
+          errors.push(`HTTP ${fontResponse.status}`);
+          continue;
+        }
+
+        const arrayBuffer = await fontResponse.arrayBuffer();
+        return {
+          buffer: Buffer.from(arrayBuffer),
+          name: fontName,
+          weight,
+          style,
+          format: attempt.format,
+          source: 'google',
+        };
+      } catch (err: unknown) {
+        errors.push(this.extractMessage(err));
       }
-
-      const fontResponse = await this.makeRequest(fontUrl);
-      if (!fontResponse.ok) {
-        throw new Error(`Font download failed with HTTP ${fontResponse.status}`);
-      }
-      const arrayBuffer = await fontResponse.arrayBuffer();
-
-      return {
-        buffer: Buffer.from(arrayBuffer),
-        name: fontName,
-        weight,
-        style,
-        format,
-        source: 'google',
-      };
-    } catch (error: unknown) {
-      throw new Error(`Failed to fetch Google Font "${fontName}": ${this.extractMessage(error)}`);
     }
+
+    throw new Error(
+      `Failed to fetch Google Font "${fontName}": no supported format available (${errors.join('; ')})`,
+    );
   }
 
   /**
@@ -174,7 +199,9 @@ class FontFetcher {
           })
         : parsed;
 
-    const candidates = formatFiltered.length > 0 ? formatFiltered : parsed;
+    // When format is 'any', formatFiltered already equals parsed (all blocks).
+    // For specific formats, only matching blocks are candidates (strict — no WOFF2 fallback).
+    const candidates = formatFiltered;
 
     // Prefer the block that covers U+0041 (Basic Latin) by checking the unicode-range
     // descriptor for a range that spans it.
@@ -196,6 +223,8 @@ class FontFetcher {
         return false;
       });
     });
+
+    if (candidates.length === 0) return null;
 
     // Fall back to the last candidate — Google places the primary Latin subset last
     return (latinBlock ?? candidates[candidates.length - 1]).url;
@@ -255,14 +284,14 @@ class FontFetcher {
    * Uses a finally block to guarantee the timeout handle is always cleared,
    * preventing Node.js from staying alive due to a dangling timer.
    */
-  private async makeRequest(url: string): Promise<Response> {
+  private async makeRequest(url: string, userAgent?: string): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.options.timeout);
 
     try {
       const response = await fetch(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': this.options.userAgent as string },
+        headers: { 'User-Agent': userAgent ?? (this.options.userAgent as string) },
       });
       return response;
     } catch (error: unknown) {

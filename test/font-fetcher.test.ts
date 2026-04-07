@@ -143,7 +143,7 @@ describe('FontFetcher', () => {
 
   describe('fetchGoogleFont', () => {
     it('should fetch and parse Google Fonts CSS', async () => {
-      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
+      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff") }';
       mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
@@ -158,7 +158,7 @@ describe('FontFetcher', () => {
     });
 
     it('should use style="italic" correctly', async () => {
-      const mockCss = '@font-face { src: url("t.woff2") }';
+      const mockCss = '@font-face { src: url("t.woff") }';
       mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
@@ -169,12 +169,15 @@ describe('FontFetcher', () => {
       expect(result.style).toBe('italic');
     });
 
-    it('should throw if font URL cannot be extracted', async () => {
+    it('should throw if font URL cannot be extracted from either attempt', async () => {
+      // Both WOFF and TTF attempts get CSS with no usable URLs
       mockFetch.mockResolvedValue({
         ok: true,
         text: () => Promise.resolve('no url here'),
       });
-      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('Could not extract font URL');
+      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow(
+        'no supported format available',
+      );
     });
 
     it('should handle fetch errors', async () => {
@@ -185,7 +188,8 @@ describe('FontFetcher', () => {
     });
 
     it('should handle non-Error catch in fetchGoogleFont', async () => {
-      mockFetch.mockRejectedValueOnce('google-string-fail');
+      // Reject all attempts (both CSS fetches)
+      mockFetch.mockRejectedValue('google-string-fail');
       await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('google-string-fail');
     });
 
@@ -200,13 +204,14 @@ describe('FontFetcher', () => {
     });
 
     it('should throw if font download fails with HTTP error', async () => {
-      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
+      // Attempt 1: CSS has a WOFF URL → download returns 500
+      const woffCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff") }';
+      // Attempt 2: CSS has no TTF URL → skipped
+      const noTtfCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
       mockFetch
-        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 500,
-        });
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(woffCss) }) // attempt 1 CSS
+        .mockResolvedValueOnce({ ok: false, status: 500 }) // attempt 1 download
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(noTtfCss) }); // attempt 2 CSS
 
       await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow('HTTP 500');
     });
@@ -214,15 +219,15 @@ describe('FontFetcher', () => {
     it('should parse complex Unicode ranges correctly', async () => {
       const mockCss = `
         @font-face {
-          src: url("https://fonts.gstatic.com/cyrillic.woff2");
+          src: url("https://fonts.gstatic.com/cyrillic.woff");
           unicode-range: U+0400-045F;
         }
         @font-face {
-          src: url("https://fonts.gstatic.com/latin.woff2");
+          src: url("https://fonts.gstatic.com/latin.woff");
           unicode-range: U+0000-00FF, U+0131, U+0152-0153;
         }
         @font-face {
-          src: url("https://fonts.gstatic.com/single.woff2");
+          src: url("https://fonts.gstatic.com/single.woff");
           unicode-range: U+0041;
         }
       `;
@@ -238,7 +243,7 @@ describe('FontFetcher', () => {
     });
 
     it('should test single non-latin unicode segment', async () => {
-      const mockCss = '@font-face { src: url("t.woff2"); unicode-range: U+0042; }';
+      const mockCss = '@font-face { src: url("t.woff"); unicode-range: U+0042; }';
       mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
@@ -249,7 +254,7 @@ describe('FontFetcher', () => {
     });
 
     it('should handle invalid unicode segments gracefully', async () => {
-      const mockCss = '@font-face { src: url("t.woff2"); unicode-range: INVALID; }';
+      const mockCss = '@font-face { src: url("t.woff"); unicode-range: INVALID; }';
       mockFetch
         .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
         .mockResolvedValueOnce({
@@ -259,22 +264,33 @@ describe('FontFetcher', () => {
       await fetcher.fetchGoogleFont('Roboto');
     });
 
-    it('should support "any" format in fetchGoogleFont', async () => {
-      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/test.ttf") }';
+    it('falls back to TTF when WOFF not available (e.g. Playwrite-era fonts)', async () => {
+      // Attempt 1 (IE11 UA): CSS has no WOFF URL
+      const noWoffCss = '@font-face { src: url("https://fonts.gstatic.com/test.woff2") }';
+      // Attempt 2 (Android UA): CSS has TTF URL
+      const ttfCss = '@font-face { src: url("https://fonts.gstatic.com/test.ttf") }';
       mockFetch
-        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(noWoffCss) }) // attempt 1 CSS
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(ttfCss) }) // attempt 2 CSS
         .mockResolvedValueOnce({
           ok: true,
           arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
-        });
+        }); // TTF download
 
-      const result = await fetcher.fetchGoogleFont('Roboto', { format: 'any' });
-      expect(result.format).toBe('any');
+      const result = await fetcher.fetchGoogleFont('Roboto');
+      expect(result.format).toBe('ttf');
+      expect(result.source).toBe('google');
     });
 
-    it('should fall back to raw parsed blocks if preferred format is missing', () => {
+    it('should return null when preferred format is missing (strict filter)', () => {
       const mockCss = '@font-face { src: url("test.ttf") }';
       const result = priv(fetcher).extractLatinFontUrl(mockCss, 'woff2');
+      expect(result).toBeNull();
+    });
+
+    it('should fall back to any URL when format is "any"', () => {
+      const mockCss = '@font-face { src: url("test.ttf") }';
+      const result = priv(fetcher).extractLatinFontUrl(mockCss, 'any');
       expect(result).toBe('test.ttf');
     });
   });
