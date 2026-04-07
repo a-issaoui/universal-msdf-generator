@@ -640,19 +640,22 @@ describe('FontFetcher', () => {
       await expect(priv(fetcher).makeRequest('https://ex.com')).rejects.toThrow('raw-fail');
     });
 
-    it('should handle timeout — re-throws AbortError', async () => {
-      // Set a long timeout on fetcher so our mock fails first
-      const longTimeoutFetcher = new FontFetcher({ timeout: 5000 });
+    it('should handle timeout — triggers internal timeout', async () => {
+      // Set a very short timeout on fetcher
+      const shortTimeoutFetcher = new FontFetcher({ timeout: 10 });
+      // Mock fetch to respect the signal and reject when aborted
       mockFetch.mockImplementation(
-        () =>
-          new Promise((_, reject) => {
-            const err = new Error('The operation was aborted');
-            err.name = 'AbortError';
-            setTimeout(() => reject(err), 10);
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            if (init?.signal?.aborted) {
+              reject(init.signal.reason);
+            }
+            init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
           }),
       );
-      await expect(priv(longTimeoutFetcher).makeRequest('http://slow.com')).rejects.toThrow(
-        'The operation was aborted',
+
+      await expect(priv(shortTimeoutFetcher).makeRequest('http://forever.com')).rejects.toThrow(
+        /Request timed out \(10ms\)/,
       );
     });
 
@@ -874,7 +877,7 @@ describe('FontFetcher', () => {
       // Restore fetch mock to capture arguments
       mockFetch.mockClear();
       mockFetch.mockImplementation(
-        (url, init) =>
+        (_url, init) =>
           new Promise((_resolve, reject) => {
             if (init?.signal) {
               const onAbort = () => {
@@ -1079,7 +1082,7 @@ describe('FontFetcher', () => {
     });
 
     it('preferTTF: reorders attempts so TTF UA is tried first', async () => {
-      const ttfMagic = new Uint8Array([0x00, 0x01, 0x00, 0x00]); // TTF magic bytes
+      const ttfMagicBytes = new Uint8Array([0x00, 0x01, 0x00, 0x00]); // TTF magic bytes
       const mockCss =
         '@font-face { src: url("https://fonts.gstatic.com/t.ttf") format("truetype") }';
       mockFetch
@@ -1089,7 +1092,7 @@ describe('FontFetcher', () => {
         })
         .mockResolvedValueOnce({
           ok: true,
-          arrayBuffer: () => Promise.resolve(ttfMagic.buffer),
+          arrayBuffer: () => Promise.resolve(ttfMagicBytes.buffer),
         });
       const result = await fetcher.fetchGoogleFont('Roboto', { preferTTF: true });
       expect(result.format).toBe('ttf');
@@ -1100,6 +1103,56 @@ describe('FontFetcher', () => {
       // biome-ignore lint/suspicious/noExplicitAny: mock call arguments are untyped
       const firstCallUA = (mockFetch.mock.calls[0][1] as any)?.headers?.['User-Agent'];
       expect(firstCallUA).toContain('Android');
+    });
+
+    it('fetchGoogleFont: throws on early abort (line 442)', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        fetcher.fetchGoogleFont('Roboto', { signal: controller.signal }),
+      ).rejects.toThrow('Fetch aborted');
+    });
+
+    it('fetchGoogleFont: throws on mid-loop abort (line 472)', async () => {
+      const controller = new AbortController();
+
+      // Abort inside the rate limiter acquire, which happens just before the loop
+      vi.spyOn(googleFontsRateLimiter, 'acquire').mockImplementation(async () => {
+        controller.abort();
+      });
+
+      await expect(
+        fetcher.fetchGoogleFont('Roboto', { signal: controller.signal }),
+      ).rejects.toThrow('Fetch aborted');
+    });
+
+    it('fetchLocalFile: re-throws AbortError (line 686)', async () => {
+      const controller = new AbortController();
+      vi.mocked(fs.stat).mockResolvedValue({
+        isFile: () => true,
+        size: 100,
+      } as unknown as import('node:fs').Stats);
+      const abortErr = new Error('Aborted');
+      abortErr.name = 'AbortError';
+      vi.mocked(fs.readFile).mockRejectedValue(abortErr);
+
+      await expect(
+        fetcher.fetchLocalFile('test.ttf', { signal: controller.signal }),
+      ).rejects.toThrow('Aborted');
+    });
+
+    it('makeRequest: handles already aborted signal without reason (line 768)', async () => {
+      // Create a mock signal because we can't set .reason on a real AbortSignal
+      const mockSignal = {
+        aborted: true,
+        reason: undefined,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as AbortSignal;
+
+      await expect(
+        priv(fetcher).makeRequest('http://ex.com', { signal: mockSignal }),
+      ).rejects.toThrow('Request aborted by external signal');
     });
   });
 });
