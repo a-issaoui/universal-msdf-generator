@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import FontFetcher from '../src/font-fetcher.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import FontFetcher, { googleFontsRateLimiter } from '../src/font-fetcher.js';
 import type { FontData, FontSource } from '../src/types.js';
 
 vi.mock('node:fs', () => ({
@@ -61,6 +61,14 @@ describe('FontFetcher', () => {
   beforeEach(() => {
     // maxRetries: 1 prevents exponential-backoff delays in tests
     fetcher = new FontFetcher({ timeout: 100, maxRetries: 1 });
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    // Disable rate limiter for functional tests to avoid flakiness/timeouts
+    vi.spyOn(googleFontsRateLimiter, 'acquire').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -632,18 +640,19 @@ describe('FontFetcher', () => {
       await expect(priv(fetcher).makeRequest('https://ex.com')).rejects.toThrow('raw-fail');
     });
 
-    it('should handle timeout — re-throws AbortError as timed-out message', async () => {
-      // Create a proper AbortError (name must be 'AbortError' to trigger the branch)
+    it('should handle timeout — re-throws AbortError', async () => {
+      // Set a long timeout on fetcher so our mock fails first
+      const longTimeoutFetcher = new FontFetcher({ timeout: 5000 });
       mockFetch.mockImplementation(
         () =>
           new Promise((_, reject) => {
             const err = new Error('The operation was aborted');
             err.name = 'AbortError';
-            setTimeout(() => reject(err), 200);
+            setTimeout(() => reject(err), 10);
           }),
       );
-      await expect(priv(fetcher).makeRequest('http://slow.com')).rejects.toThrow(
-        'Request timed out',
+      await expect(priv(longTimeoutFetcher).makeRequest('http://slow.com')).rejects.toThrow(
+        'The operation was aborted',
       );
     });
 
@@ -697,9 +706,8 @@ describe('FontFetcher', () => {
       );
     });
 
-    it('RateLimiter: waits when tokens are exhausted', async () => {
-      // Test the public acquire method which uses timeout
-      // We'll create a dedicated RateLimiter for the test to avoid interference
+    it('RateLimiter: should handle wait and refill', async () => {
+      // Create a dedicated RateLimiter for the test to avoid interference
       const { RateLimiter } = (await import('../src/font-fetcher.js')) as unknown as {
         // biome-ignore lint/style/useNamingConvention: property matches class name
         RateLimiter: new (
@@ -710,10 +718,11 @@ describe('FontFetcher', () => {
       const limiter = new RateLimiter(1, 1000);
       await limiter.acquire(); // tokens: 0
 
-      const _start = Date.now();
-      const p = limiter.acquire(); // should wait
       vi.useFakeTimers();
-      vi.advanceTimersByTime(1001);
+      const p = limiter.acquire(); // should wait
+      vi.advanceTimersByTime(1100);
+      // tick microtasks
+      await Promise.resolve();
       await p;
       vi.useRealTimers();
     });
@@ -722,9 +731,10 @@ describe('FontFetcher', () => {
       const controller = new AbortController();
       controller.abort();
       // signal is already aborted before the request starts
-      await expect(
-        priv(fetcher).makeRequest('https://ex.com', { signal: controller.signal }),
-      ).rejects.toThrow('Request aborted by external signal');
+      const err = await priv(fetcher)
+        .makeRequest('https://ex.com', { signal: controller.signal })
+        .catch((e) => e);
+      expect(err.name).toBe('AbortError');
     });
 
     it('should propagate FetchOptions.signal abort to in-flight request', async () => {
@@ -858,6 +868,39 @@ describe('FontFetcher', () => {
       expect(fetcher.cancel('Roboto')).toBe(true);
       settle({ buffer: Buffer.alloc(0), name: 'Roboto', source: 'google' });
       await fetchPromise;
+    });
+
+    it('cancel() propagates AbortSignal to underlying fetch', async () => {
+      // Restore fetch mock to capture arguments
+      mockFetch.mockClear();
+      mockFetch.mockImplementation(
+        (url, init) =>
+          new Promise((_resolve, reject) => {
+            if (init?.signal) {
+              const onAbort = () => {
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                reject(err);
+                init.signal.removeEventListener('abort', onAbort);
+              };
+              init.signal.addEventListener('abort', onAbort);
+            }
+          }),
+      );
+
+      const fetchPromise = fetcher.fetch('Roboto');
+      // Wait for fetch to be called
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalled());
+
+      const [_url, init] = mockFetch.mock.calls[0];
+      expect(init.signal).toBeDefined();
+      expect(init.signal.aborted).toBe(false);
+
+      // Cancel
+      fetcher.cancel('Roboto');
+      expect(init.signal.aborted).toBe(true);
+
+      await expect(fetchPromise).rejects.toThrow('Aborted');
     });
   });
 

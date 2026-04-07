@@ -120,13 +120,15 @@ async function defaultDnsResolver(hostname: string): Promise<string> {
  * Used to throttle Google Fonts CSS endpoint requests.
  */
 export class RateLimiter {
-  private tokens: number;
+  public tokens: number;
+  public readonly max: number;
   private lastRefill = Date.now();
 
   constructor(
-    private readonly max: number,
+    max: number,
     private readonly windowMs: number,
   ) {
+    this.max = max;
     this.tokens = max;
   }
 
@@ -151,8 +153,8 @@ export class RateLimiter {
   }
 }
 
-/** Module-level rate limiter for Google Fonts CSS endpoint (10 req/s). */
-const googleFontsRateLimiter = new RateLimiter(10, 1000);
+/** Module-level rate limiter for Google Fonts CSS endpoint (10 req/s). @internal */
+export const googleFontsRateLimiter = new RateLimiter(10, 1000);
 
 function generateCacheKey(source: FontSource, options?: GoogleFontOptions): string {
   const hash = createHash('sha256');
@@ -254,10 +256,6 @@ export class FontFetcher {
   /**
    * Primary entry point for fetching font data.
    * Detects source type automatically and caches results for deduplication.
-   */
-  /**
-   * Primary entry point for fetching font data.
-   * Detects source type automatically and caches results for deduplication.
    *
    * Note: callers MUST NOT mutate the returned `buffer` — it may be shared across
    * cache hits. Use `Buffer.from(result.buffer)` to get a private copy when needed.
@@ -271,7 +269,7 @@ export class FontFetcher {
     const controller = new AbortController();
     this.activeRequests.set(cacheKey, controller);
 
-    const promise = this.executeFetch(source, googleOptions).finally(() => {
+    const promise = this.executeFetch(source, googleOptions, controller.signal).finally(() => {
       this.activeRequests.delete(cacheKey);
     });
 
@@ -301,15 +299,18 @@ export class FontFetcher {
   private async executeFetch(
     source: FontSource,
     googleOptions?: GoogleFontOptions,
+    signal?: AbortSignal,
   ): Promise<FontData> {
     const sourceType = await this.detectSourceType(source);
     switch (sourceType) {
       case 'google':
-        return this.fetchGoogleFont(source as string, googleOptions);
+        return this.fetchGoogleFont(source as string, { ...googleOptions, signal });
       case 'url':
-        return this.fetchFromUrl(source instanceof URL ? source : new URL(source as string));
+        return this.fetchFromUrl(source instanceof URL ? source : new URL(source as string), {
+          signal,
+        });
       case 'local':
-        return this.fetchLocalFile(String(source));
+        return this.fetchLocalFile(String(source), { signal });
       case 'buffer':
         return this.processBufferSource(source);
       default:
@@ -418,7 +419,7 @@ export class FontFetcher {
   // -------------------------------------------------------------------------
 
   async fetchGoogleFont(fontName: string, options: GoogleFontOptions = {}): Promise<FontData> {
-    const { weight = '400', style = 'normal' } = options;
+    const { weight = '400', style = 'normal', signal } = options;
 
     // Map common aliases to numeric weights for Google Fonts v2 API
     const WeightMap: Record<string, string> = {
@@ -437,9 +438,11 @@ export class FontFetcher {
     const normalizedWeight = weight.toLowerCase().replace(/[- ]/g, '');
     const resolvedWeight = WeightMap[normalizedWeight] || weight;
 
+    // Check for early abort
+    if (signal?.aborted) throw new Error('Fetch aborted');
+
     // Rate-limit calls to the Google Fonts CSS endpoint
     await googleFontsRateLimiter.acquire();
-
     const ital = style === 'italic' ? '1' : '0';
     const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
       fontName,
@@ -466,6 +469,7 @@ export class FontFetcher {
     const errors: Array<{ format: string; error: string }> = [];
 
     for (const attempt of attempts) {
+      if (signal?.aborted) throw new Error('Fetch aborted');
       try {
         const fontData = await this.attemptGoogleFontFetch(
           cssUrl,
@@ -474,6 +478,7 @@ export class FontFetcher {
           style,
           attempt.ua,
           attempt.format,
+          signal,
         );
         if (this.validateFontBuffer(fontData.buffer, fontData.format)) return fontData;
         errors.push({
@@ -481,6 +486,7 @@ export class FontFetcher {
           error: `Content failed validation for format ${fontData.format}`,
         });
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') throw err;
         errors.push({ format: attempt.format, error: this.extractMessage(err) });
       }
     }
@@ -498,8 +504,9 @@ export class FontFetcher {
     style: string,
     userAgent: string,
     preferredFormat: 'woff' | 'ttf' | 'any',
+    signal?: AbortSignal,
   ): Promise<FontData> {
-    const cssResponse = await this.fetchWithRetry(cssUrl, { userAgent });
+    const cssResponse = await this.fetchWithRetry(cssUrl, { userAgent, signal });
     const css = await cssResponse.text();
 
     const fontUrl = this.extractLatinFontUrl(css, preferredFormat);
@@ -509,7 +516,7 @@ export class FontFetcher {
     const fontUrlObj = new URL(fontUrl);
     this.validateUrlSecurity(fontUrlObj);
 
-    const fontResponse = await this.fetchWithRetry(fontUrl, { userAgent });
+    const fontResponse = await this.fetchWithRetry(fontUrl, { userAgent, signal });
     const buffer = await this.readResponseWithSizeLimit(fontResponse);
 
     const detectedFormat = this.detectFormatFromBuffer(buffer);
@@ -612,7 +619,7 @@ export class FontFetcher {
 
   async fetchFromUrl(
     url: string | URL,
-    options: { format?: string; name?: string } = {},
+    options: { format?: string; name?: string; signal?: AbortSignal } = {},
   ): Promise<FontData> {
     const urlObj = url instanceof URL ? url : new URL(url);
     await this.validateUrlSecurity(urlObj);
@@ -621,7 +628,7 @@ export class FontFetcher {
     const format = options.format ?? this.detectFormatFromUrl(urlStr);
     const name = options.name ?? this.extractFontNameFromUrl(urlStr);
 
-    const response = await this.fetchWithRetry(urlStr);
+    const response = await this.fetchWithRetry(urlStr, { signal: options.signal });
     const buffer = await this.readResponseWithSizeLimit(response);
 
     const detectedFormat = this.detectFormatFromBuffer(buffer);
@@ -640,7 +647,7 @@ export class FontFetcher {
 
   async fetchLocalFile(
     filePath: string,
-    options: { name?: string; format?: string } = {},
+    options: { name?: string; format?: string; signal?: AbortSignal } = {},
   ): Promise<FontData> {
     let resolvedPath: string;
 
@@ -674,8 +681,9 @@ export class FontFetcher {
 
     let buffer: Buffer;
     try {
-      buffer = await fs.readFile(resolvedPath);
+      buffer = await fs.readFile(resolvedPath, { signal: options.signal });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') throw err;
       throw new Error(`Failed to read local file "${filePath}": ${this.extractMessage(err)}`);
     }
 
@@ -708,19 +716,11 @@ export class FontFetcher {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
-        // Don't retry on deterministic failures
-        if (
-          lastError.message.includes('blocked') ||
-          lastError.message.includes('traversal') ||
-          lastError.message.includes('too large') ||
-          lastError.message.includes('not allowed') ||
-          lastError.message.includes('DNS resolution failed') ||
-          lastError.message.includes('HTTP 4') // 4xx client errors
-        ) {
+        if (lastError.name === 'AbortError' || !this.isRetryableError(lastError)) {
           throw lastError;
         }
 
-        if (attempt < maxRetries - 1) {
+        if (attempt < maxRetries) {
           await this.sleep(RETRY_DELAY_BASE * 2 ** attempt);
         }
       }
@@ -728,6 +728,21 @@ export class FontFetcher {
 
     throw new Error(
       `Failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
+    );
+  }
+
+  /** Determines if an error is deterministic/fatal and should NOT be retried. */
+  private isRetryableError(error: Error): boolean {
+    const msg = error.message;
+    return !(
+      (
+        msg.includes('blocked') ||
+        msg.includes('traversal') ||
+        msg.includes('too large') ||
+        msg.includes('not allowed') ||
+        msg.includes('DNS resolution failed') ||
+        msg.includes('HTTP 4')
+      ) // 4xx client errors
     );
   }
 
@@ -739,16 +754,22 @@ export class FontFetcher {
     await this.validateUrlSecurityAsync(new URL(url));
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.options.timeout as number);
+    const timeout = setTimeout(() => {
+      const err = new Error(`Request timed out (${this.options.timeout}ms): ${url}`);
+      err.name = 'AbortError';
+      controller.abort(err);
+    }, this.options.timeout as number);
 
     // If an external signal is provided (per-request or global FetchOptions), link to controller
     const externalSignal = options.signal ?? this.options.signal;
     if (externalSignal) {
       if (externalSignal.aborted) {
         clearTimeout(timeout);
-        throw new Error('Request aborted by external signal');
+        throw externalSignal.reason ?? new Error('Request aborted by external signal');
       }
-      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      externalSignal.addEventListener('abort', () => controller.abort(externalSignal.reason), {
+        once: true,
+      });
     }
 
     let response: Response;
@@ -768,9 +789,8 @@ export class FontFetcher {
       });
     } catch (err) {
       clearTimeout(timeout);
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error(`Request timed out (${this.options.timeout}ms) or aborted: ${url}`);
-      }
+      // Ensure we preserve the AbortError name for detection in fetchWithRetry
+      if (err instanceof Error && err.name === 'AbortError') throw err;
       throw err;
     }
 
