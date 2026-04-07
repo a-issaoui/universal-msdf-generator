@@ -216,5 +216,6 @@ const generateMultiple = async (s: FontSource[], o?: GenerateOptions): Promise<M
   }
 };
 
+export type { SecureFetchOptions } from './font-fetcher.js';
 export { generate, generateMultiple, MSDFUtils, UniversalMSDFGenerator };
 export default UniversalMSDFGenerator;
