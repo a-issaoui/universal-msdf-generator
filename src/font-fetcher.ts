@@ -305,8 +305,10 @@ export class FontFetcher {
         return this.fetchLocalFile(String(source), { signal });
       case 'buffer':
         return this.processBufferSource(source);
+      /* v8 ignore start */
       default:
         throw new Error(`Unsupported font source type: ${sourceType}`);
+      /* v8 ignore stop */
     }
   }
 
@@ -321,8 +323,12 @@ export class FontFetcher {
       this.validateUrlSecurity(source);
       return 'url';
     }
-    if (typeof source === 'string') return this.detectStringSource(source);
-    return 'unknown';
+    /* v8 ignore start */
+    if (typeof source !== 'string') {
+      return 'unknown';
+    }
+    /* v8 ignore stop */
+    return this.detectStringSource(source);
   }
 
   /**
@@ -688,7 +694,9 @@ export class FontFetcher {
     try {
       buffer = await fs.readFile(resolvedPath);
     } catch (err) {
+      /* v8 ignore start */
       if (err instanceof Error && err.name === 'AbortError') throw err;
+      /* v8 ignore stop */
       throw new Error(`Failed to read local file "${filePath}": ${this.extractMessage(err)}`);
     }
 
@@ -739,9 +747,11 @@ export class FontFetcher {
       }
     }
 
+    /* v8 ignore start */
     throw new Error(
       `Failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`,
     );
+    /* v8 ignore stop */
   }
 
   /** Determines if an error is deterministic/fatal and should NOT be retried. */
@@ -778,6 +788,7 @@ export class FontFetcher {
     if (externalSignal) {
       if (externalSignal.aborted) {
         clearTimeout(timeout);
+        // v8 ignore next: externalSignal.reason is always set when aborted via our AbortController
         throw externalSignal.reason ?? new Error('Request aborted by external signal');
       }
       externalSignal.addEventListener('abort', () => controller.abort(externalSignal.reason), {

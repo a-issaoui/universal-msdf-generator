@@ -53,35 +53,36 @@ export async function loadFont(
     };
   }
 
+  /* v8 ignore start */
+  if (format !== 'woff2') {
+    throw new Error(`Unexpected font format: ${format}`);
+  }
+  /* v8 ignore stop */
+
   // WOFF2: Decompress to TTF
-  if (format === 'woff2') {
-    if (options.verbose) {
-      console.log('[FontLoader] Decompressing WOFF2...');
-    }
-
-    const result = await decompressWoff2(buffer);
-
-    if (options.verbose) {
-      const ratio = (result.ratio * 100).toFixed(1);
-      console.log(
-        `[FontLoader] Decompressed: ${(result.compressedSize / 1024).toFixed(1)}KB -> ` +
-          `${(result.originalSize / 1024).toFixed(1)}KB ` +
-          `(${ratio}% reduction, ${result.processingTimeMs.toFixed(1)}ms)`,
-      );
-    }
-
-    return {
-      buffer: result.buffer,
-      format: detectFontFormat(result.buffer) as 'ttf' | 'otf',
-      originalFormat: 'woff2',
-      wasConverted: true,
-      stats: {
-        compressionRatio: result.ratio,
-        decompressionTimeMs: result.processingTimeMs,
-      },
-    };
+  if (options.verbose) {
+    console.log('[FontLoader] Decompressing WOFF2...');
   }
 
-  /* istanbul ignore next: covered by isSupportedFormat check */
-  throw new Error(`Unexpected font format: ${format}`);
+  const result = await decompressWoff2(buffer);
+
+  if (options.verbose) {
+    const ratio = (result.ratio * 100).toFixed(1);
+    console.log(
+      `[FontLoader] Decompressed: ${(result.compressedSize / 1024).toFixed(1)}KB -> ` +
+        `${(result.originalSize / 1024).toFixed(1)}KB ` +
+        `(${ratio}% reduction, ${result.processingTimeMs.toFixed(1)}ms)`,
+    );
+  }
+
+  return {
+    buffer: result.buffer,
+    format: detectFontFormat(result.buffer) as 'ttf' | 'otf',
+    originalFormat: 'woff2',
+    wasConverted: true,
+    stats: {
+      compressionRatio: result.ratio,
+      decompressionTimeMs: result.processingTimeMs,
+    },
+  };
 }

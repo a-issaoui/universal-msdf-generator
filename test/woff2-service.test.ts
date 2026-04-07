@@ -52,6 +52,14 @@ describe('WOFF2 Decompression Service', () => {
     );
   });
 
+  test('throws error if wawoff2 fails with non-Error', async () => {
+    vi.mocked((await import('wawoff2')).decompress).mockRejectedValue('String error');
+
+    await expect(decompressWoff2(mockWoff2Buffer)).rejects.toThrow(
+      'WOFF2 decompression failed: String error',
+    );
+  });
+
   test('throws error if output exceeds maxOutputSize', async () => {
     const wawoff2 = await import('wawoff2');
     // Mock outputting 2MB from a small buffer
