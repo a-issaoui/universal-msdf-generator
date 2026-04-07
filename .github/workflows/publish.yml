@@ -30,9 +30,12 @@ jobs:
 
       - name: Check if already published
         id: check
+        shell: bash
         run: |
-          if npm view "@a-issaoui/universal-msdf-generator@${{ steps.pkg.outputs.version }}" version 2>/dev/null; then
+          # Use npm view versions as it's more reliable for brand-new versions
+          if npm view "@a-issaoui/universal-msdf-generator" versions --json | jq -e ". | contains([\"${{ steps.pkg.outputs.version }}\"])" >/dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice ::Version ${{ steps.pkg.outputs.version }} is already published, skipping."
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
