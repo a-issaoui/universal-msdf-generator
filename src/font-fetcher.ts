@@ -420,13 +420,16 @@ export class FontFetcher {
   async fetchGoogleFont(fontName: string, options: GoogleFontOptions = {}): Promise<FontData> {
     const { weight = '400', style = 'normal' } = options;
 
+    // Map common aliases to numeric weights for Google Fonts v2 API
+    const resolvedWeight = weight === 'bold' ? '700' : weight === 'normal' ? '400' : weight;
+
     // Rate-limit calls to the Google Fonts CSS endpoint
     await googleFontsRateLimiter.acquire();
 
     const ital = style === 'italic' ? '1' : '0';
     const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
       fontName,
-    )}:ital,wght@${ital},${weight}&display=swap`;
+    )}:ital,wght@${ital},${resolvedWeight}&display=swap`;
 
     // UA → expected format pairs. Default order: WOFF first (smaller), TTF second, any last.
     // When preferTTF is set (i.e. saveFontFile: true), TTF is tried first so the

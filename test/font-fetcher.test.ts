@@ -288,6 +288,27 @@ describe('FontFetcher', () => {
       expect(result.style).toBe('italic');
     });
 
+    it('should map weight aliases (bold/normal) for Google Fonts URL', async () => {
+      const mockCss = '@font-face { src: url("https://fonts.gstatic.com/t.woff") }';
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(woffMagic()) });
+
+      // Test bold -> 700 mapping
+      await fetcher.fetchGoogleFont('Roboto', { weight: 'bold' });
+      const firstUrl = mockFetch.mock.calls[0][0];
+      expect(firstUrl).toContain('wght@0,700');
+
+      // Test normal -> 400 mapping
+      mockFetch.mockClear();
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(mockCss) })
+        .mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(woffMagic()) });
+      await fetcher.fetchGoogleFont('Roboto', { weight: 'normal' });
+      const secondUrl = mockFetch.mock.calls[0][0];
+      expect(secondUrl).toContain('wght@0,400');
+    });
+
     it('should throw if font URL cannot be extracted from any attempt', async () => {
       // All 3 attempts get CSS with no usable URLs → all fail
       mockFetch.mockResolvedValue({
@@ -800,7 +821,7 @@ describe('FontFetcher', () => {
 
       // Call with different googleOptions — each should miss cache and call fetchGoogleFont
       await fetcher.fetch('Roboto', { weight: '400', style: 'normal' });
-      await fetcher.fetch('Roboto', { weight: '700', style: 'bold' });
+      await fetcher.fetch('Roboto', { weight: '700', style: 'normal' });
       expect(spy).toHaveBeenCalledTimes(2);
     });
 
