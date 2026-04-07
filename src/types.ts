@@ -221,6 +221,15 @@ export interface FontData {
   path?: string;
   /** Original source URL if applicable */
   originalUrl?: string;
+  /** Original format before any conversion (e.g., 'woff2') */
+  originalFormat?: string;
+  /** Whether the font was decompressed/converted during loading */
+  wasConverted?: boolean;
+  /** Conversion performance and compression data */
+  metadata?: {
+    compressionRatio?: number;
+    decompressionTimeMs?: number;
+  };
 }
 
 /**

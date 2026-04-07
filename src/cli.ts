@@ -45,7 +45,7 @@ function showHelp() {
   Sources:
     - Google Font name (e.g. "Roboto")
     - URL to font file  (e.g. "https://example.com/font.ttf")
-    - Local file path   (e.g. "./fonts/myfont.otf")
+    - Local file path   (e.g. "./fonts/myfont.otf" or "./font.woff2")
 
   Options:
     --out, -o          Output directory (default: ./output)
@@ -73,6 +73,7 @@ function showHelp() {
   Examples:
     $ universal-msdf Roboto -c ascii -o ./assets
     $ universal-msdf https://example.com/font.ttf --size 64
+    $ universal-msdf ./font.woff2 --charset latin      # Auto-decompresses
     $ universal-msdf ./my-font.otf --force
     $ universal-msdf "Open Sans" -c latin --format both --weight 400
     $ universal-msdf Roboto "Open Sans" Lato --concurrency 2

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.8.0] - 2026-04-07
+
+### Added
+- **Native WOFF2 Support**: Transparent, zero-configuration decompression of WOFF2 fonts into TTF/OTF format using `wawoff2` (WASM).
+- **Automated Normalization**: All font acquisition channels (Google Fonts, URLs, local files, buffers) now automatically detect and decompress WOFF2 inputs.
+- **Conversion Metadata**: Added `originalFormat`, `wasConverted`, and `stats` to the `FontData` interface for better observability.
+- **Wasm Service**: Dedicated lazy-loaded `Woff2Service` with size validation and format verification.
+
+### Changed
+- **FontFetcher**: Integrated the unified `loadFont` pipeline into all acquisition channels, replacing legacy manual format detection.
+- **CLI**: Updated help text and examples to emphasize native WOFF2 support.
+
+### Fixed
+- **Types**: Resolved implicit `any` issues in the test suite and added strict declarations for third-party WASM modules.
 
 ## [1.7.0] - 2026-04-07
 

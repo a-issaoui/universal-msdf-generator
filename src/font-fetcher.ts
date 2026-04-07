@@ -8,6 +8,8 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { URL } from 'node:url';
+import { detectFormatFromExtension } from './font-format.js';
+import { loadFont } from './font-loader.js';
 import type { FetchOptions, FontData, FontSource, GoogleFontOptions } from './types.js';
 
 // ============================================================================
@@ -39,17 +41,7 @@ const DEFAULT_MAX_RETRIES = 3;
 /** Base delay for exponential backoff retry (ms) */
 const RETRY_DELAY_BASE = 1000;
 
-// ============================================================================
-// Font Format Magic Bytes
-// ============================================================================
-
-const FONT_SIGNATURES: Record<string, { magic: Buffer; offset?: number }> = {
-  ttf: { magic: Buffer.from([0x00, 0x01, 0x00, 0x00]) },
-  otf: { magic: Buffer.from([0x4f, 0x54, 0x54, 0x4f]) }, // "OTTO"
-  woff: { magic: Buffer.from([0x77, 0x4f, 0x46, 0x46]) }, // "wOFF"
-  woff2: { magic: Buffer.from([0x77, 0x4f, 0x46, 0x32]) }, // "wOF2"
-  eot: { magic: Buffer.from([0x4c, 0x50, 0x46, 0x00]), offset: 8 },
-};
+// FONT_SIGNATURES removed in favor of font-format.ts
 
 // ============================================================================
 // Public types
@@ -396,7 +388,7 @@ export class FontFetcher {
     );
   }
 
-  private processBufferSource(source: FontSource): FontData {
+  private async processBufferSource(source: FontSource): Promise<FontData> {
     let buffer: Buffer;
     if (Buffer.isBuffer(source)) {
       buffer = source;
@@ -405,12 +397,20 @@ export class FontFetcher {
     } else {
       buffer = Buffer.from(source as ArrayBuffer);
     }
-    const detectedFormat = this.detectFormatFromBuffer(buffer);
+
+    const loaded = await loadFont(buffer, {
+      verbose: this.options.verbose,
+      sourceHint: 'buffer source',
+    });
+
     return {
-      buffer: protectBuffer(buffer),
+      buffer: protectBuffer(loaded.buffer),
       name: 'buffer-font',
-      format: detectedFormat ?? undefined,
+      format: loaded.format,
       source: 'buffer',
+      originalFormat: loaded.originalFormat,
+      wasConverted: loaded.wasConverted,
+      metadata: loaded.stats,
     };
   }
 
@@ -471,7 +471,7 @@ export class FontFetcher {
     for (const attempt of attempts) {
       if (signal?.aborted) throw new Error('Fetch aborted');
       try {
-        const fontData = await this.attemptGoogleFontFetch(
+        return await this.attemptGoogleFontFetch(
           cssUrl,
           fontName,
           weight,
@@ -480,11 +480,6 @@ export class FontFetcher {
           attempt.format,
           signal,
         );
-        if (this.validateFontBuffer(fontData.buffer, fontData.format)) return fontData;
-        errors.push({
-          format: attempt.format,
-          error: `Content failed validation for format ${fontData.format}`,
-        });
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') throw err;
         errors.push({ format: attempt.format, error: this.extractMessage(err) });
@@ -519,14 +514,21 @@ export class FontFetcher {
     const fontResponse = await this.fetchWithRetry(fontUrl, { userAgent, signal });
     const buffer = await this.readResponseWithSizeLimit(fontResponse);
 
-    const detectedFormat = this.detectFormatFromBuffer(buffer);
+    const loaded = await loadFont(buffer, {
+      verbose: this.options.verbose,
+      sourceHint: `Google Font "${fontName}"`,
+    });
+
     return {
-      buffer: protectBuffer(buffer),
+      buffer: protectBuffer(loaded.buffer),
       name: fontName,
       weight,
       style,
-      format: detectedFormat ?? (preferredFormat !== 'any' ? preferredFormat : 'unknown'),
+      format: loaded.format,
       source: 'google',
+      originalFormat: loaded.originalFormat,
+      wasConverted: loaded.wasConverted,
+      metadata: loaded.stats,
     };
   }
 
@@ -570,7 +572,7 @@ export class FontFetcher {
       const url = urlMatch[1];
       const formatMatch = blockContent.match(/format\(\s*['"]?([^)'"]+)['"]?\s*\)/i);
       const formatHint = formatMatch?.[1].toLowerCase() ?? 'unknown';
-      const format = this.canonicalizeFormat(formatHint) ?? this.detectFormatFromUrl(url);
+      const format = this.canonicalizeFormat(formatHint) ?? detectFormatFromExtension(url);
 
       const rangeMatch = blockContent.match(/unicode-range\s*:\s*([^;]+)/i);
       const unicodeRange = rangeMatch?.[1].trim() ?? null;
@@ -624,20 +626,23 @@ export class FontFetcher {
     const urlObj = url instanceof URL ? url : new URL(url);
     await this.validateUrlSecurity(urlObj);
 
-    const urlStr = urlObj.href;
-    const format = options.format ?? this.detectFormatFromUrl(urlStr);
-    const name = options.name ?? this.extractFontNameFromUrl(urlStr);
-
-    const response = await this.fetchWithRetry(urlStr, { signal: options.signal });
+    const response = await this.fetchWithRetry(urlObj.href, { signal: options.signal });
     const buffer = await this.readResponseWithSizeLimit(response);
 
-    const detectedFormat = this.detectFormatFromBuffer(buffer);
+    const loaded = await loadFont(buffer, {
+      verbose: this.options.verbose,
+      sourceHint: urlObj.href,
+    });
+
     return {
-      buffer: protectBuffer(buffer),
-      name: name || 'unknown-font',
-      format: detectedFormat ?? format,
+      buffer: protectBuffer(loaded.buffer),
+      name: this.extractFontNameFromUrl(urlObj.href),
+      format: loaded.format,
       source: 'url',
-      originalUrl: urlStr,
+      originalUrl: urlObj.href,
+      originalFormat: loaded.originalFormat,
+      wasConverted: loaded.wasConverted,
+      metadata: loaded.stats,
     };
   }
 
@@ -681,21 +686,29 @@ export class FontFetcher {
 
     let buffer: Buffer;
     try {
-      buffer = await fs.readFile(resolvedPath, { signal: options.signal });
+      buffer = await fs.readFile(resolvedPath);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') throw err;
       throw new Error(`Failed to read local file "${filePath}": ${this.extractMessage(err)}`);
     }
 
-    const detectedFormat = this.detectFormatFromBuffer(buffer);
-    const claimedFormat = options.format ?? path.extname(resolvedPath).slice(1).toLowerCase();
+    const loaded = await loadFont(buffer, {
+      verbose: this.options.verbose,
+      sourceHint: resolvedPath,
+    });
+
+    // Check for mid-loop abort before returning
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('Fetch aborted');
 
     return {
-      buffer: protectBuffer(buffer),
+      buffer: protectBuffer(loaded.buffer),
       name: options.name ?? path.basename(resolvedPath, path.extname(resolvedPath)),
-      format: detectedFormat ?? claimedFormat,
-      source: 'local',
+      format: loaded.format,
       path: resolvedPath,
+      source: 'local',
+      originalFormat: loaded.originalFormat,
+      wasConverted: loaded.wasConverted,
+      metadata: loaded.stats,
     };
   }
 
@@ -906,41 +919,7 @@ export class FontFetcher {
   // Format detection & validation
   // -------------------------------------------------------------------------
 
-  private detectFormatFromUrl(urlStr: string): string {
-    try {
-      const url = new URL(urlStr);
-      const ext = path.extname(url.pathname).toLowerCase();
-      const formatMap: Record<string, string> = {
-        '.ttf': 'ttf',
-        '.otf': 'otf',
-        '.woff': 'woff',
-        '.woff2': 'woff2',
-        '.eot': 'eot',
-      };
-      return formatMap[ext] ?? 'unknown';
-    } catch {
-      return 'unknown';
-    }
-  }
-
-  private detectFormatFromBuffer(buffer: Buffer): string | null {
-    if (buffer.length < 4) return null;
-    for (const [format, { magic, offset = 0 }] of Object.entries(FONT_SIGNATURES)) {
-      if (buffer.length >= offset + magic.length) {
-        const slice = buffer.subarray(offset, offset + magic.length);
-        if (slice.equals(magic)) return format;
-      }
-    }
-    return null;
-  }
-
-  private validateFontBuffer(buffer: Buffer, claimedFormat?: string): boolean {
-    const detected = this.detectFormatFromBuffer(buffer);
-    // If we can detect a format, it's a real font — pass regardless of claimed format
-    if (detected) return true;
-    // No signature found: only reject when a specific format was claimed
-    return !claimedFormat || claimedFormat === 'unknown';
-  }
+  // detectFormatFromUrl, detectFormatFromBuffer, and validateFontBuffer removed in favor of font-loader.ts
 
   private extractFontNameFromUrl(urlStr: string): string {
     try {

@@ -13,6 +13,7 @@ The **Universal MSDF Generator** is an enterprise-grade orchestration engine for
 - **AngelCode Compliance**: Generates standard `.fnt` and `.png` assets compatible with PixiJS v8.
 - **Hyper-Range Stability**: Support for massive 32px distance fields for razor-sharp edges.
 - **Universal Fetching**: Download directly from Google Fonts, remote URLs, or local files with robust `AbortSignal` cancellation support.
+- **Native WOFF2 Support**: Transparent, zero-configuration decompression of WOFF2 fonts into TTF/OTF format via WASM.
 - **Identity Sync**: Deterministic asset naming ensures zero cache-misses and 100% certified reliability.
 - **Enterprise Hardened**: 100% branch coverage and production-grade async management.
 
@@ -23,7 +24,7 @@ The CLI and Node API are engineered for build-time efficiency. UMG automatically
 One engine to rule them all. UMG flawlessly resolves fonts from:
 - **Google Fonts**: Download by name (e.g., `Orbitron`, `Roboto:700`).
 - **Remote URLs**: Direct processing from any CDN.
-- **Local Filesystem**: Direct support for `.ttf` and `.otf` files.
+- **Local Filesystem**: Direct support for `.ttf`, `.otf`, and `.woff2` files (transparently decompressed).
 
 ### ♾️ Infinity Zoom (Interactive Demo)
 Witness the perfection. Our generated fonts maintain **perfectly sharp, vector-like edges** even at extreme magnification (25.0x zoom and beyond). Check the `examples/` directory for an interactive PixiJS visualization.
