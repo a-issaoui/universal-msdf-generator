@@ -76,7 +76,7 @@ npx universal-msdf "Roboto" --force --format both --weight 700
 | `--size`, `-s` | Font size in pixels | `48` |
 | `--range`, `-r` | Distance field range in pixels | `4` |
 | `--format` | Output format: `json` \| `fnt` \| `both` \| `all` | `json` |
-| `--weight`, `-w` | Font weight, e.g. `400`, `700`, `bold` | `400` |
+| `--weight`, `-w` | Font weight, e.g. `400`, `700`, `bold`, `Light`, `Black` | `400` |
 | `--style` | Font style, e.g. `normal`, `italic` | `normal` |
 | `--name`, `-n` | Override output filename stem | derived |
 | `--edge-coloring` | Edge algorithm: `simple` \| `inktrap` \| `distance` | `simple` |
