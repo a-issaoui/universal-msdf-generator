@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts', 'src/cli.ts'],
+  entry: ['src/index.ts', 'src/cli.ts', 'src/converter-worker.ts'],
   format: ['cjs', 'esm'],
   dts: {
     compilerOptions: {

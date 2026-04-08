@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generate } from '../src/index.ts';
-import type { MSDFSuccess } from '../src/types.ts';
+import { generate } from '../dist/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,36 +38,34 @@ async function run() {
     console.log('\n');
 
     if (result.success && !result.cached) {
-      const res = result as MSDFSuccess;
       console.log('✅ SUCCESS: WOFF2 fetch, decompression, and generation complete.');
 
-      const fontMeta = res.fontMetadata;
+      const fontMeta = result.fontMetadata;
       if (fontMeta) {
         console.log('\nDecompression Stats:');
         console.log(
-          `- Format: ${fontMeta.originalFormat || 'unknown'} -> ${res.data.info.face ? 'TTF' : 'Uncompressed'}`,
+          `- Format: ${fontMeta.originalFormat || 'unknown'} -> ${result.data.info.face ? 'TTF' : 'Uncompressed'}`,
         );
         console.log(`- Compression Ratio: ${fontMeta.compressionRatio?.toFixed(2) || 'N/A'}`);
         console.log(`- Decompression Time: ${fontMeta.decompressionTimeMs?.toFixed(2) || 'N/A'}ms`);
       }
 
       console.log('\nGenerated Files:');
-      res.savedFiles?.forEach((f) => {
+      result.savedFiles?.forEach((f) => {
         console.log(` - ${path.basename(f)}`);
       });
 
       console.log('\nLayout Summary:');
-      console.log(`- Glyphs: ${res.data.chars.length}`);
-      console.log(`- Atlases: ${res.atlases.length}`);
-      console.log(`- Size: ${res.data.common.scaleW}x${res.data.common.scaleH}`);
+      console.log(`- Glyphs: ${result.data.chars.length}`);
+      console.log(`- Atlases: ${result.atlases.length}`);
+      console.log(`- Size: ${result.data.common.scaleW}x${result.data.common.scaleH}`);
     } else if (result.success && result.cached) {
       console.log('✨ Re-using cached MSDF output.');
       result.savedFiles.forEach((f) => {
         console.log(` - ${path.basename(f)}`);
       });
     } else {
-      const failure = result as import('../src/types.ts').MSDFFailure;
-      console.error('❌ FAILED:', failure.error);
+      console.error('❌ FAILED:', result.error);
     }
   } catch (err) {
     console.error('💥 UNEXPECTED ERROR:', err);
