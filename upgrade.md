@@ -1,1122 +1,113 @@
 # Upgrade Plan: Multilanguage & Arabic Script Support
 
-## 0. Context and Constraints
+## 0. Read This First
 
-This document describes the complete, production-quality implementation for adding complex script support (Arabic, Hebrew, Indic, CJK, etc.) to `universal-msdf-generator`. Read everything before writing a single line of code.
-
-### The fundamental problem
-
-The current pipeline is:
-
-```
-charset (unicode codepoints)
-    → gen.loadGlyphs(codepoints)          // calls _getGlyphIndex(unicode) per codepoint
-    → gen.packGlyphs(...)
-    → gen.createAtlasImage(bin)
-```
-
-`loadGlyphs()` in `msdfgen-wasm` calls `_getGlyphIndex(unicode)` which looks up the font's `cmap` table. This works for Latin/Cyrillic/CJK because every character has exactly one Unicode codepoint and one `cmap` entry.
-
-**Arabic breaks this completely.** Arabic letters have 2–4 contextual forms (isolated/initial/medial/final). These forms live in the font's `GSUB` table as substitution rules, not in `cmap`. The letter ب (U+0628) has:
-
-| Form | Description | Source |
-|------|-------------|--------|
-| ب | isolated | cmap (U+0628) |
-| بـ | initial | GSUB `init` lookup |
-| ـبـ | medial | GSUB `medi` lookup |
-| ـب | final | GSUB `fina` lookup |
-
-Only the isolated form has a Unicode codepoint. The other three are **glyph IDs with no Unicode**, produced by HarfBuzz text shaping from GSUB table lookups.
-
-The fix is a two-phase approach:
-1. Run HarfBuzz on a synthetic test corpus that exercises every contextual combination → collect the set of required glyph IDs.
-2. Load those glyph IDs directly into msdfgen-wasm by calling `gen._module._loadGlyph(glyphId, ...)` (the low-level WASM export), bypassing `loadGlyphs()`.
-
-This requires using a private API on `msdfgen-wasm`. It is the only correct path.
+This document is the definitive implementation plan for adding complex script support (Arabic, Persian, Urdu, Hebrew, Indic, etc.) to `universal-msdf-generator`. It supersedes any earlier notes. Read all sections before writing a single line of code.
 
 ---
 
-## 1. New Dependencies
+## 1. The Core Problem: Codepoints vs Glyph IDs
 
-### 1.1 `harfbuzzjs` (required)
+This is the single most important concept. Everything else follows from it.
+
+### 1.1 How the Current System Works (Latin)
+
+```
+charset string ("ABC…") → codepoints [65, 66, 67…] → gen.loadGlyphs(codepoints)
+```
+
+There is a 1:1 mapping. The character `A` (U+0041) always maps to one glyph via the font's `cmap` table. `msdfgen-wasm` calls `_getGlyphIndex(unicode)` (cmap lookup) then `_loadGlyph(index)`.
+
+### 1.2 Why Arabic Breaks This
+
+A single Arabic codepoint maps to **multiple glyphs** depending on the joining context:
+
+| Character | Codepoint | Isolated | Initial | Medial | Final |
+|-----------|-----------|---------|---------|--------|-------|
+| ب (Beh) | U+0628 | glyph 45 | glyph 46 | glyph 47 | glyph 48 |
+| ل (Lam) | U+0644 | glyph 89 | glyph 90 | glyph 91 | glyph 92 |
+| لا (Lam-Alef) | U+0644+U+0627 | — | — | — | glyph 203 (ligature) |
+
+Passing `[0x0628, 0x0644]` to `gen.loadGlyphs()` yields only isolated forms. The three contextual forms and all ligatures — which are different glyph IDs stored in the font's GSUB table — are never loaded.
+
+### 1.3 The Solution
+
+1. Use HarfBuzz to shape the charset in every contextual combination → collect the complete set of required glyph IDs.
+2. Load those glyph IDs directly into `msdfgen-wasm` by calling the low-level WASM export `_loadGlyph(glyphId)` directly, bypassing `loadGlyphs()`.
+
+Step 2 requires accessing `gen._module` (a private field of the Msdfgen class). This is intentional. The `msdfgen-wasm` JS wrapper does not expose a `loadGlyphsByIndex()` public method. The WASM binary itself does expose `_loadGlyph(index)` and we call it directly. Pin the `msdfgen-wasm` version and add a smoke test so any upstream API breakage is detected immediately.
+
+**Phase 0 prerequisite (before writing any code):** Run the following isolated Node.js script to confirm `_loadGlyph` is still exposed on `gen._module` in the installed version:
+
+```javascript
+// scripts/verify-msdfgen-api.mjs
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { Msdfgen } from 'msdfgen-wasm';
+const require = createRequire(import.meta.url);
+const wasmPath = require.resolve('msdfgen-wasm/wasm');
+const buf = readFileSync(wasmPath);
+const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+const gen = await Msdfgen.create(ab);
+console.assert(typeof gen._module._loadGlyph === 'function', '_loadGlyph not found');
+console.assert(typeof gen._module._getGlyphIndex === 'function', '_getGlyphIndex not found');
+console.log('msdfgen-wasm private API verified OK');
+```
+
+Also before writing code, run the following to confirm `harfbuzzjs` works in isolation with a real Arabic font (Noto Sans Arabic is recommended — permissive SIL Open Font License):
+
+```javascript
+// scripts/verify-harfbuzz.mjs
+import hbjs from 'harfbuzzjs/hbjs.js';
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+const require = createRequire(import.meta.url);
+const wasmPath = require.resolve('harfbuzzjs/hb.wasm');
+const wasmBytes = readFileSync(wasmPath);
+const { instance } = await WebAssembly.instantiate(wasmBytes, {});
+const hb = hbjs(instance);
+
+const fontBuf = readFileSync('./test/fixtures/NotoSansArabic-Regular.ttf');
+const blob = hb.createBlob(fontBuf);
+const face = hb.createFace(blob, 0);
+const font = hb.createFont(face);
+const upem = face.upem;
+font.setScale(upem, upem);
+blob.destroy();
+
+const buf = hb.createBuffer();
+buf.addText('لا');          // Lam + Alef = should collapse to ONE ligature glyph
+buf.setDirection('rtl');
+buf.setScript('Arab');
+buf.setLanguage('ar');
+hb.shape(font, buf);
+
+const infos = buf.getGlyphInfos();
+console.assert(infos.length === 1, `Expected 1 ligature glyph, got ${infos.length}`);
+console.log(`Lam-Alef ligature glyph ID: ${infos[0].codepoint}`); // .codepoint holds glyph ID after shaping
+buf.destroy();
+font.destroy();
+face.destroy();
+console.log('harfbuzzjs verified OK');
+```
+
+Both scripts must pass before Phase 1 begins.
+
+---
+
+## 2. New Dependency
+
+### `harfbuzzjs` — optional peer dependency
 
 ```bash
 npm install harfbuzzjs
 ```
 
-Package: `harfbuzzjs` on npm. Provides pre-compiled HarfBuzz as a WASM binary (`hb.wasm`) plus a thin JS wrapper. This is the reference implementation used by Google Fonts tooling.
-
-The npm package exposes:
-- `harfbuzzjs/hb.wasm` — the WASM binary, resolved via `createRequire`
-- `harfbuzzjs/hb-subset.wasm` — not needed
-- A raw WASM module with `hb_buffer_*`, `hb_font_*`, `hb_shape`, `hb_glyph_info_get_glyph_infos`, `hb_glyph_info_get_glyph_positions` exports
-
-**Important:** `harfbuzzjs` does not ship a high-level JS class. You call its C API directly through the WASM module. The integration code in section 3.1 handles this.
-
-### 1.2 No other new runtime dependencies
-
-`opentype.js` is not needed — HarfBuzz handles GSUB/GPOS correctly.
-
----
-
-## 2. Architecture Overview
-
-### New files
-
-```
-src/
-  shaper/
-    harfbuzz.ts        ← HarfBuzz WASM loader + hb_shape() wrapper
-    text-shaper.ts     ← High-level ArabicShaper class (language/script/direction)
-    charset-presets.ts ← Arabic/Hebrew/Persian/Devanagari charset strings
-    glyph-loader.ts    ← Direct glyph-ID loader for msdfgen-wasm
-```
-
-### Modified files
-
-```
-src/types.ts           ← Add `script`, `direction`, `language`, `shaping` to GenerateOptions
-src/utils.ts           ← Add arabic/hebrew/persian/devanagari to COMMON_CHARSETS
-src/converter-worker.ts← Add shaping phase before gen.loadGlyphs()
-src/converter.ts       ← Pass shaping options into ConvertJobOptions
-tsup.config.ts         ← No changes needed (src/shaper/* is tree-shaken into chunks)
-```
-
-### New test files
-
-```
-test/
-  shaper.test.ts       ← Unit tests for HarfBuzz wrapper and ArabicShaper
-  charset-presets.test.ts ← Preset string validation
-```
-
----
-
-## 3. Implementation — New Files
-
-### 3.1 `src/shaper/harfbuzz.ts`
-
-HarfBuzz WASM loader and raw shaping call. Singleton per process (WASM init is expensive).
-
-```typescript
-/**
- * shaper/harfbuzz.ts
- *
- * Loads the HarfBuzz WASM binary and exposes a single `hbShape()` function.
- * The module is a lazy singleton — the WASM is only loaded on first use.
- *
- * HarfBuzz C API used:
- *   hb_blob_create_or_fail / hb_blob_destroy
- *   hb_face_create / hb_face_destroy
- *   hb_font_create / hb_font_set_scale / hb_font_destroy
- *   hb_buffer_create / hb_buffer_add_utf8 / hb_buffer_guess_segment_properties
- *   hb_buffer_set_direction / hb_buffer_set_script / hb_buffer_set_language
- *   hb_shape
- *   hb_buffer_get_length
- *   hb_buffer_get_glyph_infos
- *   hb_buffer_get_glyph_positions
- *   hb_buffer_destroy
- */
-
-import { promises as fs } from 'node:fs';
-import { createRequire } from 'node:module';
-
-export interface HbGlyphInfo {
-  glyphId: number;   // glyph index in the font
-  cluster: number;   // byte offset in the original UTF-8 string
-}
-
-export interface HbGlyphPosition {
-  xAdvance: number;
-  yAdvance: number;
-  xOffset: number;
-  yOffset: number;
-}
-
-export interface HbShapeResult {
-  infos: HbGlyphInfo[];
-  positions: HbGlyphPosition[];
-}
-
-export type HbDirection = 'ltr' | 'rtl' | 'ttb' | 'btt';
-export type HbScript =
-  | 'Arab' | 'Hebr' | 'Deva' | 'Beng' | 'Gujr' | 'Guru' | 'Knda'
-  | 'Mlym' | 'Orya' | 'Taml' | 'Telu' | 'Thai' | 'Latn' | 'Cyrl';
-
-export interface HbShapeOptions {
-  direction?: HbDirection;
-  script?: HbScript;
-  language?: string; // BCP 47 tag, e.g. 'ar', 'fa', 'ur', 'he'
-  features?: string[]; // e.g. ['+kern', '+liga', '+mark']
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// HarfBuzz direction/script constants
-// (Values from hb-common.h — do not change)
-// ──────────────────────────────────────────────────────────────────────────────
-
-const HB_DIRECTION: Record<HbDirection, number> = {
-  ltr: 4,
-  rtl: 5,
-  ttb: 6,
-  btt: 7,
-};
-
-// HB uses 4-char tag integers: tag = (c1<<24)|(c2<<16)|(c3<<8)|c4
-function hbTag(s: string): number {
-  const c = s.padEnd(4, ' ');
-  return (
-    (c.charCodeAt(0) << 24) |
-    (c.charCodeAt(1) << 16) |
-    (c.charCodeAt(2) << 8) |
-    c.charCodeAt(3)
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Singleton WASM instance
-// ──────────────────────────────────────────────────────────────────────────────
-
-// biome-ignore lint/suspicious/noExplicitAny: HarfBuzz WASM module has no TS types
-type HbModule = any;
-
-let _hbModule: HbModule | null = null;
-let _initPromise: Promise<HbModule> | null = null;
-
-async function getHbModule(): Promise<HbModule> {
-  if (_hbModule) return _hbModule;
-  if (_initPromise) return _initPromise;
-
-  _initPromise = (async () => {
-    const require = createRequire(import.meta.url);
-    const wasmPath = require.resolve('harfbuzzjs/hb.wasm');
-    const wasmBytes = await fs.readFile(wasmPath);
-
-    // harfbuzzjs ships its own thin JS wrapper alongside the WASM.
-    // We instantiate the WASM directly here for full control.
-    const { instance } = await WebAssembly.instantiate(wasmBytes, {
-      env: {
-        // The HarfBuzz WASM binary from harfbuzzjs does not import host functions.
-        // If a future version does, add them here.
-      },
-    });
-    _hbModule = instance.exports;
-    return _hbModule;
-  })();
-
-  _hbModule = await _initPromise;
-  return _hbModule;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Public API
-// ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * Shape `text` using HarfBuzz and return per-glyph info + positions.
- *
- * The `fontBuffer` must be the raw TTF/OTF binary (same buffer passed to
- * gen.loadFont() in the msdfgen-wasm pipeline).
- *
- * Result glyphs are in visual order (already reversed for RTL text).
- */
-export async function hbShape(
-  text: string,
-  fontBuffer: Uint8Array,
-  options: HbShapeOptions = {},
-): Promise<HbShapeResult> {
-  const hb = await getHbModule();
-
-  // ── allocate a font from the raw bytes ─────────────────────────────────────
-  const fontBytes = new Uint8Array(fontBuffer);
-  const fontPtr = hb.malloc(fontBytes.byteLength);
-  new Uint8Array(hb.memory.buffer).set(fontBytes, fontPtr);
-
-  const blob = hb.hb_blob_create_or_fail(fontPtr, fontBytes.byteLength, 1 /* HB_MEMORY_MODE_READONLY */, 0, 0);
-  const face = hb.hb_face_create(blob, 0);
-  const font = hb.hb_font_create(face);
-  const upem = hb.hb_face_get_upem(face);
-  hb.hb_font_set_scale(font, upem, upem);
-
-  // ── allocate a text buffer ─────────────────────────────────────────────────
-  const enc = new TextEncoder();
-  const textBytes = enc.encode(text);
-  const textPtr = hb.malloc(textBytes.byteLength + 1);
-  new Uint8Array(hb.memory.buffer).set(textBytes, textPtr);
-  new Uint8Array(hb.memory.buffer)[textPtr + textBytes.byteLength] = 0; // null terminate
-
-  const buf = hb.hb_buffer_create();
-  hb.hb_buffer_add_utf8(buf, textPtr, textBytes.byteLength, 0, textBytes.byteLength);
-
-  // ── set direction / script / language ────────────────────────────────────
-  if (options.direction) {
-    hb.hb_buffer_set_direction(buf, HB_DIRECTION[options.direction]);
-  }
-  if (options.script) {
-    hb.hb_buffer_set_script(buf, hbTag(options.script));
-  }
-  if (options.language) {
-    const langBytes = enc.encode(options.language);
-    const langPtr = hb.malloc(langBytes.byteLength + 1);
-    new Uint8Array(hb.memory.buffer).set(langBytes, langPtr);
-    new Uint8Array(hb.memory.buffer)[langPtr + langBytes.byteLength] = 0;
-    const langObj = hb.hb_language_from_string(langPtr, langBytes.byteLength);
-    hb.hb_buffer_set_language(buf, langObj);
-    hb.free(langPtr);
-  }
-
-  // If nothing was set explicitly, let HarfBuzz guess from the text content.
-  hb.hb_buffer_guess_segment_properties(buf);
-
-  // ── apply features ─────────────────────────────────────────────────────────
-  // Features are optional — HarfBuzz enables required features automatically
-  // (ccmp, init, medi, fina, rlig) based on the script.
-  let featuresPtr = 0;
-  if (options.features && options.features.length > 0) {
-    // Each hb_feature_t is 8 bytes: tag(4) + value(4) + start(4) + end(4) = 16 bytes
-    // We allocate per-feature structs and pass a pointer array.
-    // For simplicity, we rely on hb_shape() default features here and leave
-    // explicit feature override for a future iteration.
-  }
-
-  // ── shape ─────────────────────────────────────────────────────────────────
-  hb.hb_shape(font, buf, featuresPtr, 0);
-
-  // ── read results ──────────────────────────────────────────────────────────
-  const glyphCount = hb.hb_buffer_get_length(buf);
-  const infosPtr = hb.hb_buffer_get_glyph_infos(buf, 0);
-  const posPtr = hb.hb_buffer_get_glyph_positions(buf, 0);
-
-  const heap32 = new Int32Array(hb.memory.buffer);
-  const infos: HbGlyphInfo[] = [];
-  const positions: HbGlyphPosition[] = [];
-
-  for (let i = 0; i < glyphCount; i++) {
-    // hb_glyph_info_t: codepoint(4) + mask(4) + cluster(4) + var1(4) + var2(4) = 20 bytes
-    const infoBase = (infosPtr + i * 20) >> 2;
-    infos.push({
-      glyphId: heap32[infoBase],     // codepoint field holds glyph ID after shaping
-      cluster: heap32[infoBase + 2], // byte cluster
-    });
-
-    // hb_glyph_position_t: x_advance(4) + y_advance(4) + x_offset(4) + y_offset(4) + var(4) = 20 bytes
-    const posBase = (posPtr + i * 20) >> 2;
-    // HarfBuzz uses 26.6 fixed-point internally scaled to upem
-    positions.push({
-      xAdvance: heap32[posBase],
-      yAdvance: heap32[posBase + 1],
-      xOffset:  heap32[posBase + 2],
-      yOffset:  heap32[posBase + 3],
-    });
-  }
-
-  // ── cleanup ────────────────────────────────────────────────────────────────
-  hb.hb_buffer_destroy(buf);
-  hb.hb_font_destroy(font);
-  hb.hb_face_destroy(face);
-  hb.hb_blob_destroy(blob);
-  hb.free(textPtr);
-  hb.free(fontPtr);
-
-  return { infos, positions };
-}
-
-/** Pre-warm the HarfBuzz WASM module (optional, avoids first-use latency). */
-export const initHarfBuzz = getHbModule;
-```
-
-### 3.2 `src/shaper/text-shaper.ts`
-
-High-level shaping logic: generating the complete set of glyph IDs required for an atlas.
-
-```typescript
-/**
- * shaper/text-shaper.ts
- *
- * ArabicShaper collects the set of unique glyph IDs required for a given
- * charset by running HarfBuzz on synthetic text that exercises every
- * contextual form:
- *
- *   isolated  →  ZWJ + char + ZWJ  (both sides joined)
- *   initial   →  char + ZWJ        (joins to next char)
- *   medial    →  ZWJ + char + ZWJ  (joins both sides — same as isolated context
- *                                   but OpenType init/medi differ by position)
- *   final     →  ZWJ + char        (joins to previous char)
- *
- * ZWJ (U+200D) forces a joining context without producing a visible glyph.
- *
- * For each base character we shape four contextual strings and collect all
- * glyph IDs that HarfBuzz produces. Deduplication is handled by a Set.
- */
-
-import { hbShape } from './harfbuzz.js';
-import type { HbScript, HbShapeOptions } from './harfbuzz.js';
-
-export interface ShapedGlyphDescriptor {
-  glyphId: number;
-  /** Original Unicode codepoint, if the glyph directly represents one character. */
-  unicode?: number;
-  /** True when this glyph is a ligature of two or more base characters. */
-  isLigature: boolean;
-  /** Byte cluster of the first source character in the synthetic string. */
-  cluster: number;
-}
-
-export interface ShapingOptions {
-  script?: HbScript;
-  direction?: 'ltr' | 'rtl';
-  language?: string;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Arabic Unicode block ranges (used to detect whether a codepoint needs shaping)
-// ──────────────────────────────────────────────────────────────────────────────
-const ARABIC_RANGES: [number, number][] = [
-  [0x0600, 0x06FF], // Arabic
-  [0x0750, 0x077F], // Arabic Supplement
-  [0x08A0, 0x08FF], // Arabic Extended-A
-  [0xFB50, 0xFDFF], // Arabic Presentation Forms-A
-  [0xFE70, 0xFEFF], // Arabic Presentation Forms-B
-];
-
-// Hebrew, Syriac, Thaana also require shaping
-const COMPLEX_SCRIPT_RANGES: [number, number][] = [
-  ...ARABIC_RANGES,
-  [0x0590, 0x05FF], // Hebrew
-  [0x0700, 0x074F], // Syriac
-  [0x0780, 0x07BF], // Thaana
-  [0x0900, 0x097F], // Devanagari
-  [0x0980, 0x09FF], // Bengali
-  [0x0A80, 0x0AFF], // Gujarati
-  [0x0B00, 0x0B7F], // Oriya
-  [0x0B80, 0x0BFF], // Tamil
-  [0x0C00, 0x0C7F], // Telugu
-  [0x0C80, 0x0CFF], // Kannada
-  [0x0D00, 0x0D7F], // Malayalam
-  [0x0E00, 0x0E7F], // Thai
-  [0x0E80, 0x0EFF], // Lao
-];
-
-export function needsShaping(codepoint: number): boolean {
-  return COMPLEX_SCRIPT_RANGES.some(([lo, hi]) => codepoint >= lo && codepoint <= hi);
-}
-
-const ZWJ = '\u200D'; // ZERO WIDTH JOINER — forces joining context
-
-/**
- * Returns 4 synthetic strings that put `char` in each of the 4 Arabic
- * contextual positions (isolated, initial, medial, final).
- *
- * Using a neutral joining character (ح, U+062D — medial-capable) as the
- * neighbour ensures the font applies the correct GSUB lookup.
- */
-function arabicContextStrings(char: string): string[] {
-  // Use ZWJ as a zero-width connector. It signals a joining context to the
-  // shaping engine without contributing a rendered glyph.
-  return [
-    char,                        // isolated (no neighbours)
-    `${char}${ZWJ}`,             // initial (joins to next)
-    `${ZWJ}${char}${ZWJ}`,       // medial (joins both sides)
-    `${ZWJ}${char}`,             // final (joins to previous)
-  ];
-}
-
-/**
- * Shape a charset string and return the complete set of unique glyph IDs
- * required for atlas generation.
- *
- * For non-complex characters (Latin, digits, etc.) the glyph ID is obtained
- * by shaping the character in isolation (no context), which gives the same
- * result as cmap lookup.
- *
- * For complex-script characters, four contextual strings are shaped and all
- * unique produced glyph IDs are collected.
- *
- * @returns Array of ShapedGlyphDescriptor, deduplicated by glyphId.
- */
-export async function collectRequiredGlyphs(
-  charset: string,
-  fontBuffer: Uint8Array,
-  options: ShapingOptions = {},
-): Promise<ShapedGlyphDescriptor[]> {
-  const seen = new Set<number>();
-  const result: ShapedGlyphDescriptor[] = [];
-
-  const shapeOpts: HbShapeOptions = {
-    script:    options.script,
-    direction: options.direction ?? 'ltr',
-    language:  options.language,
-  };
-
-  // Deduplicated codepoints
-  const codepoints = Array.from(
-    new Set(Array.from(charset, (c) => c.codePointAt(0) as number)),
-  );
-
-  for (const cp of codepoints) {
-    const char = String.fromCodePoint(cp);
-    const isComplex = needsShaping(cp);
-
-    const testStrings = isComplex
-      ? arabicContextStrings(char)
-      : [char];
-
-    for (const testStr of testStrings) {
-      const shaped = await hbShape(testStr, fontBuffer, shapeOpts);
-
-      for (const info of shaped.infos) {
-        if (info.glyphId === 0) continue; // glyph ID 0 = .notdef, skip
-        if (seen.has(info.glyphId)) continue;
-        seen.add(info.glyphId);
-
-        // Determine if this is a ligature: the shaped result for a single-char
-        // input has exactly 1 glyph. Multiple glyphs per char → ligature.
-        const isLigature = testStr.replace(ZWJ, '').length > 1 && shaped.infos.length < testStr.replace(ZWJ, '').length;
-
-        result.push({
-          glyphId: info.glyphId,
-          unicode: isComplex ? undefined : cp,
-          isLigature,
-          cluster: info.cluster,
-        });
-      }
-    }
-  }
-
-  return result;
-}
-```
-
-### 3.3 `src/shaper/glyph-loader.ts`
-
-The bridge between HarfBuzz glyph IDs and msdfgen-wasm. This directly calls the
-low-level WASM exports, bypassing `gen.loadGlyphs()`.
-
-```typescript
-/**
- * shaper/glyph-loader.ts
- *
- * Loads a set of glyphs into msdfgen-wasm by glyph ID, not by Unicode codepoint.
- *
- * The standard `gen.loadGlyphs(codepoints)` flow is:
- *   for each unicode → _getGlyphIndex(unicode) → _loadGlyph(index)
- *
- * For shaped Arabic glyphs the HarfBuzz glyph IDs ARE the font's internal
- * glyph indices — the same values returned by `_getGlyphIndex`. We therefore
- * skip the cmap lookup and call `_loadGlyph(glyphId)` directly.
- *
- * We also need to assign a stable "unicode" value to each glyph so it appears
- * in the BMFont `chars` array with a consistent `id` field. The strategy:
- *
- *   • If `descriptor.unicode` is set (non-complex glyph), use it as-is.
- *   • Otherwise assign a Private Use Area codepoint (U+E000..U+F8FF).
- *     The mapping is returned so callers can record it in output metadata.
- *
- * IMPORTANT: This function accesses `gen._module` — a private field of the
- * Msdfgen class from msdfgen-wasm. This is a deliberate internal API use that
- * is justified because:
- *   1. msdfgen-wasm does not expose a public loadGlyphById() method.
- *   2. The _module WASM exports are stable (unchanged since the initial release).
- *   3. The alternative (forking msdfgen-wasm) creates an unbounded maintenance
- *      burden.
- * Pin the msdfgen-wasm version and add a CI smoke-test if this ever breaks.
- */
-
-import type { Msdfgen } from 'msdfgen-wasm';
-import type { ShapedGlyphDescriptor } from './text-shaper.js';
-
-const PUA_START = 0xe000; // Unicode Private Use Area start
-const PUA_END   = 0xf8ff; // Unicode Private Use Area end
-
-export interface GlyphLoadResult {
-  /** Maps glyph ID → the unicode value stored in the BMFont `chars[].id` field */
-  glyphIdToUnicode: Map<number, number>;
-  /** Number of glyphs successfully loaded */
-  loaded: number;
-  /** Number of glyphs skipped (glyph ID 0 or load error) */
-  skipped: number;
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: msdfgen-wasm _module is untyped
-type WasmModule = any;
-
-/**
- * Load a set of shaped glyphs into the msdfgen-wasm WASM instance.
- *
- * Must be called AFTER `gen.loadFont()` and INSTEAD of `gen.loadGlyphs()`.
- * After this call, `gen.packGlyphs()` and `gen.createAtlasImage()` work normally.
- */
-export function loadShapedGlyphs(
-  gen: Msdfgen,
-  descriptors: ShapedGlyphDescriptor[],
-  options: { preprocess?: boolean } = {},
-): GlyphLoadResult {
-  const module: WasmModule = (gen as unknown as { _module: WasmModule })._module;
-  const tmp: number = (gen as unknown as { _tmp: number })._tmp;
-  const preprocess = options.preprocess ?? true;
-
-  const glyphIdToUnicode = new Map<number, number>();
-  let puaIndex = 0;
-  let loaded = 0;
-  let skipped = 0;
-
-  // Reset internal glyph state (mirrors what gen.unloadGlyphs() does)
-  // biome-ignore lint/suspicious/noExplicitAny: accessing private fields
-  const genAny = gen as any;
-  if (genAny._glyphs) {
-    genAny._glyphs.forEach((g: { _ptr: number }) => module._destroyGlyph(g._ptr));
-  }
-  genAny._glyphs = [];
-  genAny._glyphMap = new Map<number, unknown>();
-
-  const floatView: Float64Array = module.HEAPF64.subarray((tmp + 8) / 8);
-  const heapu32: Uint32Array   = module.HEAPU32.subarray(tmp / 4);
-
-  for (const desc of descriptors) {
-    if (desc.glyphId === 0) {
-      skipped++;
-      continue;
-    }
-
-    // Assign unicode value for the BMFont id field
-    let unicode: number;
-    if (desc.unicode !== undefined) {
-      unicode = desc.unicode;
-    } else {
-      if (PUA_START + puaIndex > PUA_END) {
-        // PUA exhausted — more than 6400 non-unicode shaped glyphs (extremely rare)
-        skipped++;
-        continue;
-      }
-      unicode = PUA_START + puaIndex++;
-    }
-
-    const errorCode: number = module._loadGlyph(
-      desc.glyphId,
-      tmp,
-      preprocess ? 1 : 0,
-    );
-
-    if (errorCode !== 0) {
-      skipped++;
-      continue;
-    }
-
-    const glyph = {
-      index:   desc.glyphId,
-      unicode,
-      advance: floatView[0],
-      left:    floatView[1],
-      bottom:  floatView[2],
-      right:   floatView[3],
-      top:     floatView[4],
-      kerning: [] as unknown[],
-      _ptr:    heapu32[0],
-    };
-
-    genAny._glyphs.push(glyph);
-    genAny._glyphMap.set(unicode, glyph);
-    glyphIdToUnicode.set(desc.glyphId, unicode);
-    loaded++;
-  }
-
-  // Load kerning data for all glyphs (same as gen.loadKerningData())
-  // This calls _getNextKerning iteratively — no changes needed here since
-  // kerning is indexed by glyph index (font-internal), not unicode.
-  try {
-    genAny.loadKerningData();
-  } catch {
-    // Non-fatal: some Arabic fonts have no kern table
-  }
-
-  return { glyphIdToUnicode, loaded, skipped };
-}
-```
-
-### 3.4 `src/shaper/charset-presets.ts`
-
-Arabic and other complex-script charset strings, kept separate from `utils.ts`
-to avoid inflating the bundle for users who only need Latin/Cyrillic.
-
-```typescript
-/**
- * shaper/charset-presets.ts
- *
- * Character strings for complex-script charsets. These are the BASE Unicode
- * codepoints — the actual glyphs in the atlas will be more numerous because
- * each base letter produces 2–4 contextual forms after shaping.
- *
- * Usage:
- *   charset: 'arabic'         → Arabic base block (standard letters)
- *   charset: 'arabic-full'    → Arabic + Presentation Forms + diacritics
- *   charset: 'persian'        → arabic-full + 4 Farsi-specific letters
- *   charset: 'hebrew'         → Hebrew base block
- *   charset: 'devanagari'     → Devanagari base block (Hindi/Sanskrit)
- */
-
-// ── Arabic ────────────────────────────────────────────────────────────────────
-
-/** Core Arabic letters (U+0621–U+064A) — the 28 base consonants */
-const ARABIC_BASE_LETTERS =
-  '\u0621\u0622\u0623\u0624\u0625\u0626\u0627\u0628\u0629\u062A' +
-  '\u062B\u062C\u062D\u062E\u062F\u0630\u0631\u0632\u0633\u0634' +
-  '\u0635\u0636\u0637\u0638\u0639\u063A\u0641\u0642\u0643\u0644' +
-  '\u0645\u0646\u0647\u0648\u064A';
-
-/** Tashkil (diacritical marks, U+064B–U+065F) */
-const ARABIC_TASHKIL =
-  '\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655';
-
-/** Arabic digits (U+0660–U+0669) */
-const ARABIC_DIGITS = '\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669';
-
-/** Arabic punctuation (common subset) */
-const ARABIC_PUNCTUATION = '\u060C\u061B\u061F\u0640'; // comma, semicolon, ?, tatweel
-
-/** Lam-Alef mandatory ligatures in Presentation Forms-B (U+FEF5–U+FEFC) */
-const LAM_ALEF_LIGATURES = '\uFEF5\uFEF6\uFEF7\uFEF8\uFEF9\uFEFA\uFEFB\uFEFC';
-
-export function arabicCharset(): string {
-  return ARABIC_BASE_LETTERS + ARABIC_DIGITS + ARABIC_PUNCTUATION;
-}
-
-export function arabicFullCharset(): string {
-  return arabicCharset() + ARABIC_TASHKIL + LAM_ALEF_LIGATURES;
-}
-
-/** Persian/Farsi extends Arabic with 4 additional letters */
-export function persianCharset(): string {
-  return arabicFullCharset() + '\u067E\u0686\u06AF\u06CC'; // پ چ گ ی
-}
-
-/** Urdu extends Persian */
-export function urduCharset(): string {
-  return persianCharset() + '\u0679\u0688\u0691\u06BA\u06BE\u06C1\u06C3\u06D2';
-}
-
-// ── Hebrew ────────────────────────────────────────────────────────────────────
-
-/** Hebrew base block (U+05D0–U+05EA) + common diacritics (nikud) */
-export function hebrewCharset(): string {
-  const letters = Array.from({ length: 27 }, (_, i) =>
-    String.fromCodePoint(0x05d0 + i),
-  ).join('');
-  const nikud = '\u05B0\u05B1\u05B2\u05B3\u05B4\u05B5\u05B6\u05B7\u05B8\u05B9\u05BB\u05BC\u05BF\u05C1\u05C2';
-  return letters + nikud;
-}
-
-// ── Devanagari ────────────────────────────────────────────────────────────────
-
-/** Devanagari base block for Hindi (U+0900–U+097F) */
-export function devanagariCharset(): string {
-  return Array.from({ length: 128 }, (_, i) =>
-    String.fromCodePoint(0x0900 + i),
-  ).join('');
-}
-
-// ── Registry ─────────────────────────────────────────────────────────────────
-
-export const COMPLEX_CHARSET_PRESETS: Record<string, () => string> = {
-  arabic:      arabicCharset,
-  'arabic-full': arabicFullCharset,
-  persian:     persianCharset,
-  urdu:        urduCharset,
-  hebrew:      hebrewCharset,
-  devanagari:  devanagariCharset,
-};
-```
-
----
-
-## 4. Implementation — Modified Files
-
-### 4.1 `src/types.ts`
-
-Add new fields to `GenerateOptions` and a new `ScriptShapingOptions` interface.
-
-**Add after the `streamAtlases` property:**
-
-```typescript
-/**
- * Script shaping options for complex text layout (Arabic, Hebrew, Devanagari, etc.)
- * When `script` is set, HarfBuzz is used to shape the charset before MSDF generation.
- * Requires the `harfbuzzjs` package to be installed.
- */
-shaping?: {
-  /**
-   * OpenType script tag. Setting this enables HarfBuzz shaping.
-   * Common values: 'Arab' (Arabic), 'Hebr' (Hebrew), 'Deva' (Devanagari),
-   * 'Thai', 'Beng' (Bengali), 'Gujr' (Gujarati).
-   */
-  script: 'Arab' | 'Hebr' | 'Deva' | 'Beng' | 'Gujr' | 'Guru' | 'Knda' |
-          'Mlym' | 'Orya' | 'Taml' | 'Telu' | 'Thai' | 'Latn' | 'Cyrl';
-  /**
-   * Text direction for the shaped run.
-   * @default 'rtl' when script is 'Arab' or 'Hebr', 'ltr' otherwise
-   */
-  direction?: 'ltr' | 'rtl';
-  /**
-   * BCP 47 language tag, e.g. 'ar', 'fa', 'ur', 'he', 'hi'.
-   * Influences language-specific GSUB lookups (e.g. Farsi vs Arabic forms of ک).
-   */
-  language?: string;
-};
-```
-
-**Also add `'arabic' | 'arabic-full' | 'persian' | 'urdu' | 'hebrew' | 'devanagari'`** to the `CharsetName` union type:
-
-```typescript
-export type CharsetName =
-  | 'ascii' | 'alphanumeric' | 'latin' | 'cyrillic' | 'custom'
-  | 'arabic' | 'arabic-full' | 'persian' | 'urdu' | 'hebrew' | 'devanagari';
-```
-
-### 4.2 `src/utils.ts`
-
-Update `COMMON_CHARSETS` and `resolveStringCharset` to delegate to the new presets.
-
-**Import at top of file:**
-
-```typescript
-import { COMPLEX_CHARSET_PRESETS } from './shaper/charset-presets.js';
-```
-
-**Extend `resolveStringCharset`:**
-
-```typescript
-function resolveStringCharset(c: string): string {
-  if (c === 'ascii')         return COMMON_CHARSETS.ascii();
-  if (c === 'alphanumeric')  return COMMON_CHARSETS.alphanumeric();
-  if (c === 'latin')         return COMMON_CHARSETS.latin();
-  if (c === 'cyrillic')      return COMMON_CHARSETS.cyrillic();
-  if (c === 'custom') throw new Error('"custom" is a charset provider, not a preset name.');
-
-  // Complex script presets
-  if (COMPLEX_CHARSET_PRESETS[c]) return COMPLEX_CHARSET_PRESETS[c]();
-
-  return c;
-}
-```
-
-**Update `MSDFUtils.getCharsets`** to include complex presets:
-
-```typescript
-static getCharsets = () => ({
-  ...COMMON_CHARSETS,
-  ...Object.fromEntries(
-    Object.entries(COMPLEX_CHARSET_PRESETS).map(([k, v]) => [k, v]),
-  ),
-});
-```
-
-### 4.3 `src/converter-worker.ts`
-
-This is the most impactful change. The shaping phase runs before `gen.loadGlyphs()`.
-
-**Add to imports:**
-
-```typescript
-import { collectRequiredGlyphs, needsShaping } from './shaper/text-shaper.js';
-import { loadShapedGlyphs } from './shaper/glyph-loader.js';
-import type { ShapingOptions } from './shaper/text-shaper.js';
-```
-
-**Add `shaping` to `ConvertJobOptions`:**
-
-```typescript
-export interface ConvertJobOptions {
-  charset?: unknown;
-  fontSize?: number;
-  textureSize?: [number, number] | null;
-  fieldRange?: number;
-  edgeColoring?: 'simple' | 'inktrap' | 'distance';
-  padding?: number;
-  fixOverlaps?: boolean;
-  // NEW ↓
-  shaping?: {
-    script: string;
-    direction?: 'ltr' | 'rtl';
-    language?: string;
-  };
-}
-```
-
-**Update `runConversion` — replace the codepoint loading block:**
-
-```typescript
-// ── Charset resolution ────────────────────────────────────────────────────────
-const charString = resolveCharset(
-  charset as string | (string | number)[] | Set<string | number> | undefined,
-);
-const rawCodepoints = Array.from(new Set(charString), (c) => c.codePointAt(0)).filter(
-  (cp): cp is number => cp !== undefined,
-);
-
-const hasComplexScript = rawCodepoints.some(needsShaping);
-const useShaping = options.shaping?.script != null || hasComplexScript;
-
-// ── Glyph loading (shaped or plain) ──────────────────────────────────────────
-if (useShaping) {
-  const shapingOpts: ShapingOptions = {
-    script:    options.shaping?.script as ShapingOptions['script'],
-    direction: options.shaping?.direction ?? (isRTLScript(options.shaping?.script) ? 'rtl' : 'ltr'),
-    language:  options.shaping?.language,
-  };
-
-  // Collect all required glyph IDs (may include contextual forms with no Unicode)
-  const descriptors = await collectRequiredGlyphs(charString, fontBuffer, shapingOpts);
-
-  if (descriptors.length > 0) {
-    loadShapedGlyphs(gen, descriptors, { preprocess: fixOverlaps });
-  }
-} else {
-  // Existing plain codepoint path (Latin, Cyrillic, CJK, etc.)
-  if (rawCodepoints.length > 0) {
-    gen.loadGlyphs(rawCodepoints, { preprocess: fixOverlaps });
-  }
-}
-```
-
-**Add the RTL detection helper after imports:**
-
-```typescript
-function isRTLScript(script: string | undefined): boolean {
-  return script === 'Arab' || script === 'Hebr' || script === 'Thaa' || script === 'Syrc';
-}
-```
-
-**Important:** `runConversion` must become `async` once shaping is used (because `collectRequiredGlyphs` is async). Update its signature:
-
-```typescript
-export async function runConversion(
-  gen: Msdfgen,
-  fontBuffer: Uint8Array,
-  fontName: string,
-  options: ConvertJobOptions,
-  onAtlas: (filename: string, texture: Uint8Array, index: number, total: number) => void,
-): Promise<MSDFLayout> {
-```
-
-And update the worker message handler to `await runConversion(...)`.
-
-### 4.4 `src/converter.ts`
-
-Pass `shaping` from `GenerateOptions` into `ConvertJobOptions` in `_buildJobOptions()` (or wherever the job options object is assembled):
-
-```typescript
-const jobOptions: ConvertJobOptions = {
-  charset:     options.charset,
-  fontSize:    options.fontSize ?? 48,
-  textureSize: options.textureSize ?? null,
-  fieldRange:  options.fieldRange ?? 4,
-  edgeColoring:options.edgeColoring ?? 'simple',
-  padding:     options.padding ?? 2,
-  fixOverlaps: options.fixOverlaps ?? true,
-  shaping:     options.shaping,  // ← NEW
-};
-```
-
-### 4.5 CLI (`src/cli.ts`)
-
-Add `--script`, `--direction`, `--language` flags:
-
-```typescript
-'--script': (args, i, opts) => {
-  if (!opts.shaping) opts.shaping = {} as GenerateOptions['shaping'];
-  opts.shaping!.script = args[i + 1] as GenerateOptions['shaping']['script'];
-  return i + 1;
-},
-'--direction': (args, i, opts) => {
-  if (!opts.shaping) opts.shaping = {} as GenerateOptions['shaping'];
-  opts.shaping!.direction = args[i + 1] as 'ltr' | 'rtl';
-  return i + 1;
-},
-'--language': (args, i, opts) => {
-  if (!opts.shaping) opts.shaping = {} as GenerateOptions['shaping'];
-  opts.shaping!.language = args[i + 1];
-  return i + 1;
-},
-```
-
-Also add `arabic` as a shorthand:
-
-```typescript
-'--arabic': (_, i, opts) => {
-  opts.charset = 'arabic';
-  if (!opts.shaping) opts.shaping = {} as GenerateOptions['shaping'];
-  opts.shaping!.script = 'Arab';
-  opts.shaping!.direction = 'rtl';
-  opts.shaping!.language = 'ar';
-  return i;
-},
-```
-
-Add to CLI help table:
-
-```
---arabic               Use Arabic charset with RTL shaping (shorthand)
---script <tag>         OpenType script tag for shaping (Arab, Hebr, Deva, ...)
---direction <ltr|rtl>  Text direction for shaping context
---language <lang>      BCP 47 language tag (ar, fa, ur, he, hi, ...)
-```
-
----
-
-## 5. Test Coverage
-
-### 5.1 `test/shaper.test.ts`
-
-Tests for the shaping layer. Use a real Arabic font for integration tests (download in beforeAll, cache between tests). Noto Sans Arabic is recommended.
-
-Required test cases:
-
-```typescript
-describe('collectRequiredGlyphs', () => {
-  it('returns more glyph IDs than input codepoints for Arabic', async () => {
-    // "ب" (U+0628) should yield at least 2 unique glyph IDs (isolated + other forms)
-  });
-
-  it('deduplicates glyph IDs across contexts', async () => {
-    // Non-joining letters (like ا Alef) have only 2 forms (isolated=final)
-    // so the deduplication must collapse them correctly
-  });
-
-  it('collects the Lam-Alef mandatory ligature glyph', async () => {
-    // "لا" must produce a single ligature glyph ID, not two separate glyphs
-  });
-
-  it('handles non-Arabic characters without shaping context', async () => {
-    // Latin "A" must produce exactly 1 glyph ID
-  });
-});
-
-describe('loadShapedGlyphs', () => {
-  it('loads glyphs into the Msdfgen instance correctly', async () => {
-    // After loadShapedGlyphs(), gen._glyphs must have length === loaded count
-  });
-
-  it('assigns PUA unicode to shaped glyphs without a Unicode codepoint', async () => {
-    // glyphIdToUnicode must map contextual form glyphs to U+E000+
-  });
-
-  it('assigns source unicode to unshaped glyphs', async () => {
-    // A Latin glyph descriptor with unicode=65 must map to 65 in the result
-  });
-
-  it('skips glyph ID 0 (.notdef)', async () => {
-    // skipped count must be non-zero when .notdef is in descriptors
-  });
-});
-```
-
-### 5.2 `test/converter.test.ts` additions
-
-```typescript
-describe('Arabic shaping path', () => {
-  it('calls collectRequiredGlyphs when shaping.script is set', async () => {
-    // vi.mock('./shaper/text-shaper.js', ...) and assert it was called
-  });
-
-  it('calls loadShapedGlyphs instead of gen.loadGlyphs for shaped charset', async () => {
-    // Spy on loadShapedGlyphs; assert gen.loadGlyphs was NOT called
-  });
-
-  it('falls back to plain gen.loadGlyphs for Latin charset with no shaping option', async () => {
-    // The existing test path must be unaffected
-  });
-});
-```
-
-### 5.3 `test/charset-presets.test.ts`
-
-```typescript
-describe('charset presets', () => {
-  it.each(['arabic', 'arabic-full', 'persian', 'urdu', 'hebrew', 'devanagari'])(
-    '%s preset contains only valid Unicode codepoints',
-    (preset) => {
-      const str = COMPLEX_CHARSET_PRESETS[preset]();
-      expect(str.length).toBeGreaterThan(0);
-      for (const char of str) {
-        expect(char.codePointAt(0)).toBeGreaterThan(0);
-      }
-    },
-  );
-
-  it('resolveCharset("arabic") returns the arabic charset string', () => {
-    const result = resolveCharset('arabic');
-    expect(result).toContain('\u0628'); // ب
-  });
-});
-```
-
----
-
-## 6. Operational Details
-
-### 6.1 `harfbuzzjs` WASM path resolution
-
-`harfbuzzjs` ships `hb.wasm` alongside its JS files. Use the same `createRequire` pattern already used for `msdfgen-wasm`:
-
-```typescript
-const require = createRequire(import.meta.url);
-const wasmPath = require.resolve('harfbuzzjs/hb.wasm');
-```
-
-This works in both ESM and CJS contexts and survives `tsup` bundling.
-
-### 6.2 `runConversion` becomes async — worker thread impact
-
-The worker thread currently calls `runConversion` synchronously. Once shaping is added, the call must be awaited in the `parentPort.on('message', ...)` handler:
-
-```typescript
-// Before
-const layout = runConversion(gen, msg.fontBuffer, msg.fontName, msg.options, onAtlas);
-parentPort?.postMessage({ type: 'result', layout });
-
-// After
-const layout = await runConversion(gen, msg.fontBuffer, msg.fontName, msg.options, onAtlas);
-parentPort?.postMessage({ type: 'result', layout });
-```
-
-The `_executeInlineConversion` method in `converter.ts` must also `await` the call.
-
-### 6.3 Memory sizing for Arabic
-
-Arabic requires more atlas space than Latin. Auto-sizing in `utils.ts` `calculateOptimalTextureSize` should account for the glyph multiplier:
-
-```typescript
-function calculateOptimalTextureSize(
-  charCount: number,
-  fontSize: number,
-  shapingMultiplier = 1,
-): [number, number] {
-  const areaPerChar = fontSize * fontSize * 1.2;
-  const totalArea = charCount * areaPerChar * shapingMultiplier;
-  // ... rest unchanged
-}
-```
-
-A reasonable default multiplier: **3.0 for Arabic** (accounts for ~3 contextual forms on average). Pass this when `shaping.script === 'Arab'`.
-
-### 6.4 Build — no changes to `tsup.config.ts`
-
-The `src/shaper/*` files are imported by `converter-worker.ts` (which is already a build entry point) and by `converter.ts` (which feeds into `index.ts`). tsup's code splitting will emit them as chunks automatically. No new entry points are needed.
-
-### 6.5 Optional: lazy import of `harfbuzzjs`
-
-Because `harfbuzzjs` adds ~300 KB to the WASM payload and is only needed for complex scripts, consider wrapping the import in a dynamic `import()` inside `harfbuzz.ts`:
-
-```typescript
-// In getHbModule(), instead of a static import at the top:
-const hb = await import('harfbuzzjs/hb-wasm.js').catch(() => {
-  throw new Error(
-    'harfbuzzjs is required for complex script shaping. ' +
-    'Install it: npm install harfbuzzjs'
-  );
-});
-```
-
-This means users who only generate Latin/Cyrillic fonts never pay the initialization cost and don't need `harfbuzzjs` installed at all. The dependency should be listed as `peerDependencies` with `optional: true` in `package.json`:
+- **Size:** ~1.2 MB WASM binary (not 300 KB as sometimes cited)
+- **API:** `harfbuzzjs` ships a JS wrapper (`hbjs.js`) that exposes `hb.createBuffer()`, `hb.createFont()`, `buf.addText()`, `buf.getGlyphInfos()`, etc. **Do not access the raw WASM exports directly** — use the provided wrapper.
+- **Memory model:** All HarfBuzz objects must be explicitly destroyed with `.destroy()`. The WASM heap has no garbage collector.
+- **Lazy loading:** Only initialize HarfBuzz when `complexShaping` is triggered. Users who only generate Latin fonts never pay the initialization cost (~80–150ms) and do not need the package installed.
+- **Declaration:** Add as `peerDependencies` (optional) in `package.json`.
 
 ```json
 "peerDependencies": {
@@ -1129,101 +120,1072 @@ This means users who only generate Latin/Cyrillic fonts never pay the initializa
 
 ---
 
-## 7. Edge Cases and Limitations
+## 3. Architecture
 
-### 7.1 Kashida (Tatweel U+0640)
-Kashida is a letter-stretching character used for Arabic text justification. It produces a glyph (a horizontal bar). Include U+0640 in the charset (it is included in `arabicCharset()`). Renderers that do justification by repeating the kashida glyph do not need special atlas support.
+### 3.1 Components That Require No Changes
 
-### 7.2 ZWNJ/ZWJ in test strings
-The synthetic context strings used in `arabicContextStrings()` contain ZWJ (U+200D). After shaping, ZWJ produces glyph ID 0 (.notdef or an invisible zero-advance glyph). The `glyph ID 0` skip in `loadShapedGlyphs` handles this correctly.
+| File | Reason |
+|------|--------|
+| `font-format.ts` | Magic-byte detection is format-level, script-agnostic |
+| `font-loader.ts` | TTF/OTF normalization works for all scripts |
+| `woff2-service.ts` | Decompression is binary-level |
+| `xml-generator.ts` | BMFont XML schema is the same for all scripts |
+| `utils.ts` (file I/O) | File saving, metadata, sidecar logic unchanged |
+| Identity/cache system | Slug generation and `*-meta.json` logic unchanged |
 
-### 7.3 Fonts without GSUB
-Some simplified Arabic fonts (e.g. Arial Unicode on some platforms) store contextual forms directly in the Presentation Forms block (U+FE70–U+FEFF) and have no GSUB table. For these fonts:
-- HarfBuzz will still produce correct output (it falls back to `cmap` lookup)
-- The `arabicFullCharset()` preset includes the Presentation Forms-B range as explicit codepoints
-- If a font has neither GSUB nor Presentation Forms entries, glyphs will use isolated form only — acceptable degradation.
+### 3.2 New Files to Create
 
-### 7.4 Diacritics (Tashkil) and GPOS mark positioning
-Diacritic marks (harakat/tashkil) have zero advance width and are positioned relative to their base letter using GPOS `mark` lookups. HarfBuzz resolves these positions in the `xOffset`/`yOffset` fields of `HbGlyphPosition`.
+```
+src/
+  script-detector.ts   ← Unicode range analysis: does a charset require shaping?
+  shaper.ts            ← HarfBuzz wrapper: initialization, shapeText(), getRequiredGlyphIds()
+  glyph-loader.ts      ← Direct glyph-ID loader into msdfgen-wasm (uses _module private API)
+  presentation-forms.ts← Fallback: Presentation Forms codepoint expansion (no HarfBuzz needed)
+```
 
-The current `buildLayout` in `converter-worker.ts` does not use `xOffset`/`yOffset` from HarfBuzz (it uses msdfgen-wasm's own glyph metrics). Diacritics will be included in the atlas but with zero xadvance (which is correct). The renderer is responsible for positioning marks using the glyph's offset data from the BMFont layout.
+### 3.3 Modified Files
 
-For full diacritic support, a future phase can store the HarfBuzz position offsets in a sidecar JSON alongside the BMFont layout.
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `complexShaping`, `direction`, `script`, `language` to `GenerateOptions`; extend `CharsetName`; add `shapingEngine`/`glyphIdMap` to `MSDFSuccess.metadata` |
+| `src/utils.ts` | Add `arabic`, `persian`, `urdu`, `hebrew` to `COMMON_CHARSETS` and `resolveStringCharset` |
+| `src/converter-worker.ts` | Add shaping branch before `gen.loadGlyphs()`; `runConversion` becomes `async` |
+| `src/converter.ts` | Pass `complexShaping`/`script`/`direction`/`language` through to `ConvertJobOptions` |
+| `src/index.ts` | Auto-detect and set shaping defaults for Arabic/Hebrew charset names |
+| `src/fetcher/google-fonts.ts` | Add subset hint to CSS API URL for non-Latin scripts; add verbose log when no latin block found |
+| `src/cli.ts` | Add `--complex-shaping`, `--direction`, `--language`, `--script` flags |
 
-### 7.5 Bidirectional mixed text
-The shaping phase in `collectRequiredGlyphs` processes one charset at a time. If a charset mixes Arabic and Latin (e.g., for a multilingual UI font), each range is shaped independently with appropriate direction settings. The glyphs are merged into one atlas — this is correct and the renderer handles layout direction.
+---
 
-### 7.6 CJK (Chinese/Japanese/Korean)
-CJK does not require HarfBuzz shaping (no contextual forms, no GSUB substitution for standard usage). The plain `gen.loadGlyphs(codepoints)` path works. The `charset: 'cjk-basic'` preset can be added to `charset-presets.ts` without any shaping integration. The main CJK concern is atlas size (20,000+ glyphs) which is addressed by `streamAtlases: true`.
+## 4. Implementation — New Files
+
+### 4.1 `src/script-detector.ts`
+
+```typescript
+/**
+ * script-detector.ts
+ *
+ * Analyzes a charset string and determines whether it contains complex-script
+ * characters that require HarfBuzz shaping.
+ */
+
+const COMPLEX_SCRIPT_RANGES: Array<{
+  start: number;
+  end: number;
+  script: string;
+  direction: 'rtl' | 'ltr';
+}> = [
+  { start: 0x0600, end: 0x06FF, script: 'Arab', direction: 'rtl' }, // Arabic
+  { start: 0x0750, end: 0x077F, script: 'Arab', direction: 'rtl' }, // Arabic Supplement
+  { start: 0x08A0, end: 0x08FF, script: 'Arab', direction: 'rtl' }, // Arabic Extended-A
+  { start: 0xFB50, end: 0xFDFF, script: 'Arab', direction: 'rtl' }, // Arabic Presentation Forms-A
+  { start: 0xFE70, end: 0xFEFF, script: 'Arab', direction: 'rtl' }, // Arabic Presentation Forms-B
+  { start: 0x0590, end: 0x05FF, script: 'Hebr', direction: 'rtl' }, // Hebrew
+  { start: 0xFB1D, end: 0xFB4F, script: 'Hebr', direction: 'rtl' }, // Hebrew Presentation Forms
+  { start: 0x0700, end: 0x074F, script: 'Syrc', direction: 'rtl' }, // Syriac
+  { start: 0x0900, end: 0x097F, script: 'Deva', direction: 'ltr' }, // Devanagari
+  { start: 0x0980, end: 0x09FF, script: 'Beng', direction: 'ltr' }, // Bengali
+  { start: 0x0E00, end: 0x0E7F, script: 'Thai', direction: 'ltr' }, // Thai
+];
+
+export interface ScriptAnalysis {
+  requiresShaping: boolean;
+  primaryScript: string | null;
+  primaryDirection: 'rtl' | 'ltr';
+  scriptCoverage: Map<string, number>; // script → character count
+}
+
+export function analyzeCharset(charset: string): ScriptAnalysis {
+  const coverage = new Map<string, number>();
+
+  for (const char of charset) {
+    const cp = char.codePointAt(0)!;
+    for (const range of COMPLEX_SCRIPT_RANGES) {
+      if (cp >= range.start && cp <= range.end) {
+        coverage.set(range.script, (coverage.get(range.script) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+
+  if (coverage.size === 0) {
+    return { requiresShaping: false, primaryScript: null, primaryDirection: 'ltr', scriptCoverage: coverage };
+  }
+
+  let primaryScript: string | null = null;
+  let maxCount = 0;
+  for (const [script, count] of coverage) {
+    if (count > maxCount) { maxCount = count; primaryScript = script; }
+  }
+
+  const RTL_SCRIPTS = new Set(['Arab', 'Hebr', 'Syrc', 'Thaa', 'Cprt']);
+  const primaryDirection = primaryScript && RTL_SCRIPTS.has(primaryScript) ? 'rtl' : 'ltr';
+
+  return { requiresShaping: true, primaryScript, primaryDirection, scriptCoverage: coverage };
+}
+
+export function isComplexScriptCodepoint(cp: number): boolean {
+  return COMPLEX_SCRIPT_RANGES.some((r) => cp >= r.start && cp <= r.end);
+}
+
+export function autoDetectComplexScript(charset: string): boolean {
+  return analyzeCharset(charset).requiresShaping;
+}
+```
+
+### 4.2 `src/shaper.ts`
+
+**Critical implementation notes before reading this code:**
+
+1. `harfbuzzjs` ships a high-level JS wrapper (`hbjs.js`). Use it — do not access raw WASM exports directly.
+2. After `hb.shape()`, `GlyphInfo.codepoint` no longer holds the Unicode codepoint. HarfBuzz overwrites it with the resolved **glyph ID**. This is intentional and documented in the HarfBuzz source. The `cluster` field retains the original byte offset into the input string.
+3. HarfBuzz positions are in **raw font design units** (scaled to `upem` by `font.setScale(upem, upem)`). Divide by `upem` to get em-relative values. Do **not** divide by 64 — that is FreeType's 26.6 fixed-point format, which `harfbuzzjs` does not use.
+4. Use a **dual-joining Arabic character** (ب U+0628) as the context connector when sampling contextual forms, not ZWJ (U+200D). ZWJ does not reliably trigger Arabic GSUB lookups; only real adjacent Arabic characters with the correct Unicode Joining Type (type D = Dual) do.
+5. Always destroy HarfBuzz objects (face, font, buffer) with `.destroy()`. The WASM heap has no GC.
+
+```typescript
+/**
+ * shaper.ts
+ *
+ * HarfBuzz-backed text shaping engine.
+ *
+ * Public API:
+ *   getHarfBuzz()           — lazy-init singleton HarfBuzz instance
+ *   getRequiredGlyphIds()   — shape a charset → collect unique glyph IDs
+ *   clearShaperCache()      — release face/font cache (for long-running servers)
+ */
+
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import { createRequire } from 'node:module';
+import hbjs from 'harfbuzzjs/hbjs.js';
+import { isComplexScriptCodepoint } from './script-detector.js';
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface ShapingOptions {
+  direction: 'rtl' | 'ltr';
+  script: string;   // ISO 15924 four-letter code, e.g. 'Arab'
+  language: string; // BCP 47 tag, e.g. 'ar', 'fa', 'ur'
+}
+
+export interface GlyphIdResult {
+  /** Unique glyph IDs required for the atlas (includes all contextual forms + ligatures) */
+  glyphIds: Set<number>;
+  /** Maps glyph ID → source Unicode codepoint (for BMFont metadata) */
+  glyphIdToCodepoint: Map<number, number>;
+  /** Ligatures: each entry is a single glyph that replaces multiple source codepoints */
+  ligatures: Array<{ glyphId: number; sourceCodepoints: number[] }>;
+}
+
+// ── HarfBuzz singleton ────────────────────────────────────────────────────────
+
+type HbInstance = ReturnType<typeof hbjs>;
+let _hb: HbInstance | null = null;
+let _hbInit: Promise<void> | null = null;
+
+export async function getHarfBuzz(): Promise<HbInstance> {
+  if (_hb) return _hb;
+  if (!_hbInit) {
+    _hbInit = (async () => {
+      const require = createRequire(import.meta.url);
+      const wasmPath = require.resolve('harfbuzzjs/hb.wasm');
+      const wasmBytes = await fs.readFile(wasmPath);
+      const { instance } = await WebAssembly.instantiate(wasmBytes, {});
+      _hb = hbjs(instance);
+    })();
+  }
+  await _hbInit;
+  return _hb as HbInstance;
+}
+
+// ── Per-font face cache ────────────────────────────────────────────────────────
+// Loading a HarfBuzz face (parsing GSUB/GPOS tables) takes ~10–30ms per font.
+// Cache keyed by SHA-256 of the font buffer (first 16 hex chars).
+
+interface CachedFace {
+  face: ReturnType<HbInstance['createFace']>;
+  font: ReturnType<HbInstance['createFont']>;
+  upem: number;
+}
+
+const _faceCache = new Map<string, CachedFace>();
+
+function getCachedFace(hb: HbInstance, fontBuffer: Buffer): CachedFace {
+  const key = createHash('sha256').update(fontBuffer).digest('hex').slice(0, 16);
+  if (_faceCache.has(key)) return _faceCache.get(key)!;
+
+  const blob = hb.createBlob(fontBuffer);
+  const face = hb.createFace(blob, 0);
+  const font = hb.createFont(face);
+  const upem = face.upem;
+  font.setScale(upem, upem);
+  blob.destroy(); // Blob is copied into face; safe to free
+
+  const cached = { face, font, upem };
+  _faceCache.set(key, cached);
+  return cached;
+}
+
+/** Release all cached HarfBuzz faces/fonts. Call from dispose() in long-running servers. */
+export function clearShaperCache(): void {
+  for (const { face, font } of _faceCache.values()) {
+    font.destroy();
+    face.destroy();
+  }
+  _faceCache.clear();
+  _shapingCache.clear();
+}
+
+// ── Shaping result cache ──────────────────────────────────────────────────────
+// Caches the GlyphIdResult per (font × charset × options) to avoid re-shaping
+// the same charset in batch mode.
+
+const _shapingCache = new Map<string, Promise<GlyphIdResult>>();
+
+// ── Context generation ────────────────────────────────────────────────────────
+//
+// To trigger each of the 4 Arabic contextual forms (isol/init/medi/fina),
+// we place the target character adjacent to a real dual-joining Arabic letter.
+//
+// WHY ب (Beh, U+0628) and NOT ZWJ (U+200D):
+// Arabic joining behavior is governed by the Unicode "Joining Type" property.
+// Only characters with Joining Type D (Dual-joining) or R (Right-joining)
+// actually trigger GSUB contextual substitutions in HarfBuzz.
+// ZWJ does not have Joining Type D/R — it only prevents breaking; it does
+// NOT reliably trigger init/medi/fina GSUB lookups in all fonts.
+// ب is Joining Type D, extremely common, and has only one glyph form per
+// context, making it a safe neutral connector that won't produce ligatures
+// with most target characters.
+
+const CONNECTOR = '\u0628'; // Arabic Letter Beh — Dual-joining (Type D)
+
+function arabicContextSamples(char: string): string[] {
+  return [
+    char,                                  // Isolated (no neighbours → isol form)
+    `${char}${CONNECTOR}`,                 // Initial (joins right → init form)
+    `${CONNECTOR}${char}${CONNECTOR}`,     // Medial (joins both sides → medi form)
+    `${CONNECTOR}${char}`,                 // Final (joins left → fina form)
+  ];
+}
+
+// Common Arabic ligature pairs — shape these to ensure ligature glyphs are captured.
+// Lam (ل U+0644) + Alef variants produce mandatory ligatures (rlig feature).
+const LIGATURE_PAIRS: [string, string][] = [
+  ['\u0644', '\u0627'], // Lam + Alef
+  ['\u0644', '\u0622'], // Lam + Alef with Madda Above
+  ['\u0644', '\u0623'], // Lam + Alef with Hamza Above
+  ['\u0644', '\u0625'], // Lam + Alef with Hamza Below
+];
+
+// ── Core shaping function ─────────────────────────────────────────────────────
+
+function shapeOnce(
+  hb: HbInstance,
+  font: ReturnType<HbInstance['createFont']>,
+  upem: number,
+  text: string,
+  opts: ShapingOptions,
+): Array<{ glyphId: number; cluster: number }> {
+  const buf = hb.createBuffer();
+  try {
+    buf.addText(text);
+    buf.setDirection(opts.direction);
+    buf.setScript(opts.script);
+    buf.setLanguage(opts.language);
+    buf.guessSegmentProperties();
+
+    // Required Arabic OpenType features.
+    // HarfBuzz enables ccmp/isol/init/medi/fina/rlig automatically for Arab script;
+    // these are listed explicitly for documentation purposes.
+    hb.shape(font, buf, [
+      { tag: 'ccmp', value: 1 }, // Character composition/decomposition (must be first)
+      { tag: 'isol', value: 1 },
+      { tag: 'init', value: 1 },
+      { tag: 'medi', value: 1 },
+      { tag: 'fina', value: 1 },
+      { tag: 'rlig', value: 1 }, // Required ligatures (Lam-Alef — cannot be disabled)
+      { tag: 'calt', value: 1 },
+      { tag: 'liga', value: 1 },
+      { tag: 'mark', value: 1 }, // Mark positioning (Tashkil/diacritics)
+      { tag: 'mkmk', value: 1 }, // Mark-to-mark
+      { tag: 'kern', value: 1 },
+    ]);
+
+    // After hb.shape(), GlyphInfo.codepoint holds the GLYPH ID, not the Unicode codepoint.
+    // This is intentional HarfBuzz naming — see HarfBuzz docs for hb_glyph_info_t.
+    return buf.getGlyphInfos().map((info) => ({
+      glyphId: info.codepoint, // Glyph ID (renamed by HarfBuzz after shaping)
+      cluster: info.cluster,
+    }));
+  } finally {
+    buf.destroy(); // Always destroy — WASM heap has no GC
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+async function _doGetRequiredGlyphIds(
+  charset: string,
+  fontBuffer: Buffer,
+  opts: ShapingOptions,
+): Promise<GlyphIdResult> {
+  const hb = await getHarfBuzz();
+  const { font, upem } = getCachedFace(hb, fontBuffer);
+
+  const glyphIds = new Set<number>();
+  const glyphIdToCodepoint = new Map<number, number>();
+  const ligatures: GlyphIdResult['ligatures'] = [];
+  const seenLigaturePairs = new Set<string>();
+
+  for (const char of new Set(charset)) {
+    const cp = char.codePointAt(0)!;
+    const isComplex = isComplexScriptCodepoint(cp);
+
+    const samples = isComplex ? arabicContextSamples(char) : [char];
+
+    for (const sample of samples) {
+      const shaped = shapeOnce(hb, font, upem, sample, opts);
+
+      for (const { glyphId, cluster } of shaped) {
+        if (glyphId === 0) continue; // .notdef — skip
+        // For contextual samples, only record glyphs at cluster=0 (the target char)
+        // to exclude the connector glyph (ب) from the result set.
+        const isConnectorGlyph = sample !== char && cluster !== 0;
+        if (isConnectorGlyph) continue;
+        if (!glyphIds.has(glyphId)) {
+          glyphIds.add(glyphId);
+          if (!glyphIdToCodepoint.has(glyphId)) {
+            glyphIdToCodepoint.set(glyphId, cp);
+          }
+        }
+      }
+    }
+  }
+
+  // Shape known ligature pairs to ensure ligature glyphs are captured
+  for (const [a, b] of LIGATURE_PAIRS) {
+    if (!charset.includes(a) || !charset.includes(b)) continue;
+    const pairKey = `${a}${b}`;
+    if (seenLigaturePairs.has(pairKey)) continue;
+    seenLigaturePairs.add(pairKey);
+
+    const shaped = shapeOnce(hb, font, upem, `${a}${b}`, opts);
+    // A ligature produces fewer glyphs than input characters
+    if (shaped.length < 2) {
+      for (const { glyphId } of shaped) {
+        if (glyphId === 0) continue;
+        if (!glyphIds.has(glyphId)) {
+          glyphIds.add(glyphId);
+          ligatures.push({
+            glyphId,
+            sourceCodepoints: [a.codePointAt(0)!, b.codePointAt(0)!],
+          });
+        }
+      }
+    }
+  }
+
+  return { glyphIds, glyphIdToCodepoint, ligatures };
+}
+
+/**
+ * Shape a charset string and return the complete set of unique glyph IDs
+ * needed for atlas generation. Results are cached per (font × charset × options).
+ */
+export async function getRequiredGlyphIds(
+  charset: string,
+  fontBuffer: Buffer,
+  opts: ShapingOptions,
+): Promise<GlyphIdResult> {
+  const fontHash = createHash('sha256').update(fontBuffer).digest('hex').slice(0, 16);
+  const charsetHash = createHash('sha256').update(charset).digest('hex').slice(0, 8);
+  const optsKey = `${opts.direction}:${opts.script}:${opts.language}`;
+  const cacheKey = `${fontHash}:${charsetHash}:${optsKey}`;
+
+  if (!_shapingCache.has(cacheKey)) {
+    _shapingCache.set(cacheKey, _doGetRequiredGlyphIds(charset, fontBuffer, opts));
+  }
+  return _shapingCache.get(cacheKey)!;
+}
+```
+
+### 4.3 `src/glyph-loader.ts`
+
+Bridges HarfBuzz glyph IDs to `msdfgen-wasm`. Accesses private fields on `Msdfgen`.
+
+```typescript
+/**
+ * glyph-loader.ts
+ *
+ * Loads glyphs into a Msdfgen instance by glyph ID (not Unicode codepoint).
+ * Bypasses gen.loadGlyphs() and calls gen._module._loadGlyph() directly.
+ *
+ * PRIVATE API USE:
+ *   - gen._module  — the Emscripten WASM module
+ *   - gen._glyphs  — internal glyph array
+ *   - gen._glyphMap — internal unicode→glyph map
+ *   - gen._tmp     — WASM scratch buffer pointer
+ *
+ * These fields are stable across msdfgen-wasm versions released to date.
+ * Pin msdfgen-wasm in package.json and run scripts/verify-msdfgen-api.mjs
+ * in CI to detect any upstream breakage before it reaches production.
+ *
+ * UNICODE ASSIGNMENT STRATEGY:
+ * Each glyph stored in the BMFont layout requires an integer `id` field.
+ * - Glyphs with a known source Unicode: use the Unicode value (passed via glyphIdToCodepoint).
+ * - Glyphs with no Unicode (contextual forms, ligatures): assign a Private Use Area (PUA)
+ *   codepoint starting at U+E000. The mapping is returned so callers can store it
+ *   in the generation metadata.
+ */
+
+import type { Msdfgen } from 'msdfgen-wasm';
+
+const PUA_START = 0xe000; // Unicode Private Use Area start
+const PUA_END   = 0xf8ff; // Unicode Private Use Area end (6399 slots)
+
+export interface GlyphLoadResult {
+  glyphIdToUnicode: Map<number, number>; // glyph ID → BMFont `id` value
+  loaded: number;
+  skipped: number;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: msdfgen-wasm internals are untyped
+type WasmModule = any;
+
+/**
+ * Load shaped glyphs into the Msdfgen WASM instance.
+ *
+ * Call AFTER gen.loadFont() and INSTEAD OF gen.loadGlyphs().
+ * After this call, gen.packGlyphs() and gen.createAtlasImage() work normally.
+ */
+export function loadGlyphsByIds(
+  gen: Msdfgen,
+  glyphIds: Set<number>,
+  glyphIdToCodepoint: Map<number, number>,
+  options: { preprocess?: boolean } = {},
+): GlyphLoadResult {
+  // biome-ignore lint/suspicious/noExplicitAny: accessing private fields
+  const g = gen as any;
+  const module: WasmModule = g._module;
+  const tmp: number = g._tmp;
+  const preprocess = options.preprocess ?? true;
+
+  // Reset internal glyph state (mirrors gen.unloadGlyphs())
+  if (g._glyphs) {
+    for (const glyph of g._glyphs) module._destroyGlyph(glyph._ptr);
+  }
+  g._glyphs = [];
+  g._glyphMap = new Map<number, unknown>();
+
+  const floatView: Float64Array = module.HEAPF64.subarray((tmp + 8) / 8);
+  const heapu32: Uint32Array   = module.HEAPU32.subarray(tmp / 4);
+
+  const glyphIdToUnicode = new Map<number, number>();
+  let puaIndex = 0;
+  let loaded = 0;
+  let skipped = 0;
+
+  for (const glyphId of glyphIds) {
+    if (glyphId === 0) { skipped++; continue; }
+
+    const errorCode: number = module._loadGlyph(glyphId, tmp, preprocess ? 1 : 0);
+    if (errorCode !== 0) { skipped++; continue; }
+
+    // Assign a stable unicode value for the BMFont `id` field
+    let unicode = glyphIdToCodepoint.get(glyphId);
+    if (unicode === undefined) {
+      if (PUA_START + puaIndex > PUA_END) { skipped++; continue; } // PUA exhausted
+      unicode = PUA_START + puaIndex++;
+    }
+
+    const glyph = {
+      index:   glyphId,
+      unicode,
+      advance: floatView[0],
+      left:    floatView[1],
+      bottom:  floatView[2],
+      right:   floatView[3],
+      top:     floatView[4],
+      kerning: [] as unknown[],
+      _ptr:    heapu32[0],
+    };
+
+    g._glyphs.push(glyph);
+    g._glyphMap.set(unicode, glyph);
+    glyphIdToUnicode.set(glyphId, unicode);
+    loaded++;
+  }
+
+  // Load kerning (indexed by glyph index, not unicode — no changes needed)
+  try { g.loadKerningData(); } catch { /* Non-fatal: some Arabic fonts have no kern */ }
+
+  return { glyphIdToUnicode, loaded, skipped };
+}
+```
+
+### 4.4 `src/presentation-forms.ts`
+
+Fallback for when HarfBuzz is unavailable or the font lacks a GSUB table. Expands base Arabic codepoints to their Presentation Forms (U+FB50–U+FEFF) which are accessible via `cmap` in many legacy Arabic fonts.
+
+**Limitations (document clearly in release notes):**
+- Covers only the 28 core Arabic letters — no extended Arabic or Indic
+- No language-specific alternates (Persian Yeh differs from Arabic Yeh)
+- No diacritic anchor positioning
+- Does not work for modern OpenType-only fonts (Noto, Vazirmatn, etc.) that omit Presentation Forms from their `cmap`
+
+```typescript
+/**
+ * presentation-forms.ts
+ *
+ * Fallback strategy: expand base Arabic codepoints to Presentation Forms.
+ * Only useful for legacy Arabic fonts with Presentation Forms in their cmap.
+ * Modern fonts (Noto, Vazirmatn, Amiri) require HarfBuzz shaping instead.
+ */
+
+export const ARABIC_PRESENTATION_MAP = new Map<number, {
+  isolated?: number; initial?: number; medial?: number; final?: number;
+}>([
+  [0x0628, { isolated: 0xFE8F, initial: 0xFE91, medial: 0xFE92, final: 0xFE90 }], // ب
+  [0x062A, { isolated: 0xFE95, initial: 0xFE97, medial: 0xFE98, final: 0xFE96 }], // ت
+  [0x062B, { isolated: 0xFE99, initial: 0xFE9B, medial: 0xFE9C, final: 0xFE9A }], // ث
+  [0x062C, { isolated: 0xFE9D, initial: 0xFE9F, medial: 0xFEA0, final: 0xFE9E }], // ج
+  [0x062D, { isolated: 0xFEA1, initial: 0xFEA3, medial: 0xFEA4, final: 0xFEA2 }], // ح
+  [0x062E, { isolated: 0xFEA5, initial: 0xFEA7, medial: 0xFEA8, final: 0xFEA6 }], // خ
+  [0x062F, { isolated: 0xFEA9, final: 0xFEAA }],                                  // د (right-joining: no init/medi)
+  [0x0630, { isolated: 0xFEAB, final: 0xFEAC }],                                  // ذ
+  [0x0631, { isolated: 0xFEAD, final: 0xFEAE }],                                  // ر
+  [0x0632, { isolated: 0xFEAF, final: 0xFEB0 }],                                  // ز
+  [0x0633, { isolated: 0xFEB1, initial: 0xFEB3, medial: 0xFEB4, final: 0xFEB2 }], // س
+  [0x0634, { isolated: 0xFEB5, initial: 0xFEB7, medial: 0xFEB8, final: 0xFEB6 }], // ش
+  [0x0635, { isolated: 0xFEB9, initial: 0xFEBB, medial: 0xFEBC, final: 0xFEBA }], // ص
+  [0x0636, { isolated: 0xFEBD, initial: 0xFEBF, medial: 0xFEC0, final: 0xFEBE }], // ض
+  [0x0637, { isolated: 0xFEC1, initial: 0xFEC3, medial: 0xFEC4, final: 0xFEC2 }], // ط
+  [0x0638, { isolated: 0xFEC5, initial: 0xFEC7, medial: 0xFEC8, final: 0xFEC6 }], // ظ
+  [0x0639, { isolated: 0xFEC9, initial: 0xFECB, medial: 0xFECC, final: 0xFECA }], // ع
+  [0x063A, { isolated: 0xFECD, initial: 0xFECF, medial: 0xFED0, final: 0xFECE }], // غ
+  [0x0641, { isolated: 0xFED1, initial: 0xFED3, medial: 0xFED4, final: 0xFED2 }], // ف
+  [0x0642, { isolated: 0xFED5, initial: 0xFED7, medial: 0xFED8, final: 0xFED6 }], // ق
+  [0x0643, { isolated: 0xFED9, initial: 0xFEDB, medial: 0xFEDC, final: 0xFEDA }], // ك
+  [0x0644, { isolated: 0xFEDD, initial: 0xFEDF, medial: 0xFEE0, final: 0xFEDE }], // ل
+  [0x0645, { isolated: 0xFEE1, initial: 0xFEE3, medial: 0xFEE4, final: 0xFEE2 }], // م
+  [0x0646, { isolated: 0xFEE5, initial: 0xFEE7, medial: 0xFEE8, final: 0xFEE6 }], // ن
+  [0x0647, { isolated: 0xFEE9, initial: 0xFEEB, medial: 0xFEEC, final: 0xFEEA }], // ه
+  [0x0648, { isolated: 0xFEED, final: 0xFEEE }],                                  // و (right-joining)
+  [0x064A, { isolated: 0xFEF1, initial: 0xFEF3, medial: 0xFEF4, final: 0xFEF2 }], // ي
+]);
+
+// Lam-Alef mandatory ligatures (most common first)
+export const LAM_ALEF_PRESENTATION: number[] = [
+  0xFEFB, 0xFEFC, // Lam + Alef (most common: isolated, final)
+  0xFEF5, 0xFEF6, // Lam + Alef with Madda Above
+  0xFEF7, 0xFEF8, // Lam + Alef with Hamza Above
+  0xFEF9, 0xFEFA, // Lam + Alef with Hamza Below
+];
+
+export function resolvePresentationForms(charset: string): number[] {
+  const result = new Set<number>();
+
+  for (const char of charset) {
+    const cp = char.codePointAt(0)!;
+    const forms = ARABIC_PRESENTATION_MAP.get(cp);
+    if (forms) {
+      result.add(cp); // base (isolated via cmap)
+      for (const v of Object.values(forms)) if (v !== undefined) result.add(v);
+    } else {
+      result.add(cp);
+    }
+  }
+
+  if (charset.includes('\u0644')) { // Lam present
+    for (const lc of LAM_ALEF_PRESENTATION) result.add(lc);
+  }
+
+  return Array.from(result);
+}
+```
+
+---
+
+## 5. Implementation — Modified Files
+
+### 5.1 `src/types.ts`
+
+Add to `GenerateOptions` after `streamAtlases`:
+
+```typescript
+/**
+ * Enable HarfBuzz text shaping for complex scripts (Arabic, Hebrew, Indic, etc.).
+ * Automatically set to true when charset is 'arabic', 'persian', 'urdu', or 'hebrew'.
+ * Requires `harfbuzzjs` to be installed as a peer dependency.
+ * @default false
+ */
+complexShaping?: boolean;
+
+/**
+ * ISO 15924 four-letter script tag (e.g. 'Arab', 'Hebr', 'Deva', 'Thai').
+ * Required for HarfBuzz shaping when auto-detection is insufficient.
+ */
+script?: string;
+
+/**
+ * Text direction. Auto-detected from script when not set.
+ * @default 'rtl' for Arab/Hebr/Syrc scripts, 'ltr' otherwise
+ */
+direction?: 'ltr' | 'rtl';
+
+/**
+ * BCP 47 language tag for language-specific OpenType features.
+ * Persian ('fa') and Urdu ('ur') require different shaping rules from Arabic ('ar')
+ * despite sharing the Arabic script.
+ */
+language?: string;
+```
+
+Update `CharsetName`:
+
+```typescript
+export type CharsetName =
+  | 'ascii' | 'alphanumeric' | 'latin' | 'cyrillic' | 'custom'
+  | 'arabic' | 'persian' | 'urdu' | 'hebrew';
+```
+
+Add to `MSDFSuccess.metadata`:
+
+```typescript
+/** Shaping engine used. 'none' for Latin/CJK, 'harfbuzz' for Arabic/Hebrew, 'presentation-forms' for fallback. */
+shapingEngine?: 'harfbuzz' | 'presentation-forms' | 'none';
+/** Maps glyph IDs to source Unicode codepoints (only present when shapingEngine is 'harfbuzz') */
+glyphIdMap?: Record<number, number>;
+```
+
+### 5.2 `src/utils.ts`
+
+Add to `COMMON_CHARSETS`. Comments explain exactly what's included and why:
+
+```typescript
+arabic: () => {
+  // 36 Arabic letters (including common variants like Alef with Hamza)
+  const letters =
+    '\u0621\u0622\u0623\u0624\u0625\u0626\u0627\u0628\u0629\u062A' +
+    '\u062B\u062C\u062D\u062E\u062F\u0630\u0631\u0632\u0633\u0634' +
+    '\u0635\u0636\u0637\u0638\u0639\u063A\u0641\u0642\u0643\u0644' +
+    '\u0645\u0646\u0647\u0648\u0649\u064A';
+  // Arabic-Indic numerals (U+0660–U+0669)
+  const numerals = '\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669';
+  // Tashkil diacritics (Fathah, Dammah, Kasrah, Sukun, Shaddah + Tanwin forms)
+  const tashkil = '\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655';
+  // Tatweel/Kashida elongation mark (repeated by renderer for justification)
+  const tatweel = '\u0640';
+  // Common punctuation
+  const punctuation = '\u060C\u061B\u061F\u0021\u002E\u003A\u0028\u0029';
+  return letters + numerals + tashkil + tatweel + punctuation;
+},
+
+// Persian: Arabic + 4 Farsi-specific letters + Eastern Arabic numerals
+persian: () =>
+  COMMON_CHARSETS.arabic() +
+  '\u067E\u0686\u0698\u06AF\u06CC' +                                // پ چ ژ گ ی (Persian Yeh)
+  '\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9',  // ۰–۹
+
+// Urdu: Persian + Urdu-specific letters
+urdu: () =>
+  COMMON_CHARSETS.persian() +
+  '\u0679\u0688\u0691\u06BA\u06BE\u06C1\u06C2\u06D2\u06D3',
+
+// Hebrew: 27 consonants + 5 final forms + Niqqud vowel points
+hebrew: () => {
+  const consonants = Array.from({ length: 27 }, (_, i) =>
+    String.fromCodePoint(0x05d0 + i)).join('');
+  const niqqud = '\u05B0\u05B1\u05B2\u05B3\u05B4\u05B5\u05B6\u05B7\u05B8\u05B9\u05BB\u05BC\u05BD\u05BF\u05C1\u05C2';
+  return consonants + niqqud;
+},
+```
+
+Update `resolveStringCharset` to add:
+
+```typescript
+if (c === 'arabic') return COMMON_CHARSETS.arabic();
+if (c === 'persian') return COMMON_CHARSETS.persian();
+if (c === 'urdu') return COMMON_CHARSETS.urdu();
+if (c === 'hebrew') return COMMON_CHARSETS.hebrew();
+```
+
+### 5.3 `src/converter-worker.ts`
+
+Add to `ConvertJobOptions`:
+
+```typescript
+complexShaping?: boolean;
+script?: string;
+direction?: 'ltr' | 'rtl';
+language?: string;
+```
+
+Make `runConversion` async. Replace the codepoint block:
+
+```typescript
+// ── NEW: shaping or plain codepoint path ───────────────────────────────────
+const charString = resolveCharset(
+  charset as string | (string | number)[] | Set<string | number> | undefined,
+);
+
+const useShaping =
+  options.complexShaping === true ||
+  (options.complexShaping !== false && autoDetectComplexScript(charString));
+
+let shapingEngine: 'harfbuzz' | 'presentation-forms' | 'none' = 'none';
+let glyphIdMap: Record<number, number> | undefined;
+
+if (useShaping) {
+  const shapingOptions: ShapingOptions = {
+    direction: options.direction ?? (analysis.primaryDirection ?? 'rtl'),
+    script:    options.script   ?? (analysis.primaryScript   ?? 'Arab'),
+    language:  options.language ?? 'ar',
+  };
+  // analysis = analyzeCharset(charString) — compute once
+  const analysis = analyzeCharset(charString);
+  shapingOptions.direction = options.direction ?? analysis.primaryDirection ?? 'rtl';
+  shapingOptions.script    = options.script    ?? analysis.primaryScript    ?? 'Arab';
+
+  try {
+    const { glyphIds, glyphIdToCodepoint } = await getRequiredGlyphIds(
+      charString, fontBuffer, shapingOptions,
+    );
+    if (glyphIds.size > 0) {
+      const loadResult = loadGlyphsByIds(gen, glyphIds, glyphIdToCodepoint, { preprocess: fixOverlaps });
+      glyphIdMap = Object.fromEntries(loadResult.glyphIdToUnicode);
+      shapingEngine = 'harfbuzz';
+    }
+  } catch (err) {
+    // HarfBuzz failed (harfbuzzjs not installed, or font has no GSUB) — fall back
+    const codepoints = resolvePresentationForms(charString);
+    if (codepoints.length > 0) gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });
+    shapingEngine = 'presentation-forms';
+  }
+} else {
+  // ── EXISTING PATH — unchanged ────────────────────────────────────────────
+  const codepoints = Array.from(new Set(charString), (c) => c.codePointAt(0))
+    .filter((cp): cp is number => cp !== undefined);
+  if (codepoints.length > 0) gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });
+}
+```
+
+Pass `shapingEngine` and `glyphIdMap` through to the returned layout/metadata.
+
+Also update the worker message handler to `await runConversion(...)` since it is now async.
+
+**Important — xAdvance:** Do NOT negate `xadvance` for RTL scripts. The BMFont `xadvance` field is always a positive cursor advance distance. Direction (LTR vs RTL) is a renderer responsibility, not an atlas responsibility. The existing `buildLayout` code is correct as-is.
+
+### 5.4 `src/index.ts`
+
+In `executeGen()`, before calling `converter.convert()`, auto-set shaping defaults for known charset names:
+
+```typescript
+const CHARSET_SHAPING_DEFAULTS: Record<string, { script: string; language: string; direction: 'rtl' | 'ltr' }> = {
+  arabic:  { script: 'Arab', language: 'ar', direction: 'rtl' },
+  persian: { script: 'Arab', language: 'fa', direction: 'rtl' },
+  urdu:    { script: 'Arab', language: 'ur', direction: 'rtl' },
+  hebrew:  { script: 'Hebr', language: 'he', direction: 'rtl' },
+};
+
+const charsetKey = typeof options.charset === 'string' ? options.charset : null;
+const shapingDefaults = charsetKey ? CHARSET_SHAPING_DEFAULTS[charsetKey] : null;
+
+if (shapingDefaults) {
+  options = {
+    complexShaping: true,
+    direction:      shapingDefaults.direction,
+    script:         shapingDefaults.script,
+    language:       shapingDefaults.language,
+    ...options, // Caller-supplied values override defaults
+  };
+}
+```
+
+### 5.5 `src/fetcher/google-fonts.ts`
+
+In `fetchGoogleFont()` / `extractLatinFontUrl()`:
+
+1. Add a `subset` hint to the CSS v2 URL for non-Latin scripts:
+
+```typescript
+const LANGUAGE_TO_SUBSET: Record<string, string> = {
+  ar: 'arabic', fa: 'arabic', ur: 'arabic',
+  he: 'hebrew',
+  th: 'thai',
+  hi: 'devanagari', bn: 'bengali',
+};
+
+// Append subset query parameter when a known language is specified:
+const subsetParam = options.language
+  ? `&subset=${LANGUAGE_TO_SUBSET[options.language] ?? 'latin'}`
+  : '';
+const cssUrl = `https://fonts.googleapis.com/css2?family=...${subsetParam}&display=swap`;
+```
+
+2. When no `latin` unicode-range block is found in the CSS response, log (don't throw):
+
+```typescript
+if (!latinBlock && this.options.verbose) {
+  console.log('[FontFetcher] No latin unicode-range block found — using last available block (expected for Arabic/Hebrew fonts).');
+}
+return latinBlock?.url ?? candidates[candidates.length - 1].url;
+```
+
+### 5.6 `src/cli.ts`
+
+Add flag handlers:
+
+```typescript
+'--complex-shaping':    (_, i, opts) => { opts.complexShaping = true;  return i; },
+'--no-complex-shaping': (_, i, opts) => { opts.complexShaping = false; return i; },
+
+'--direction': (args, i, opts) => {
+  const val = args[i + 1];
+  if (val !== 'ltr' && val !== 'rtl') throw new Error(`--direction must be 'ltr' or 'rtl' (got "${val}")`);
+  opts.direction = val;
+  return i + 1;
+},
+
+'--language': (args, i, opts) => {
+  if (!/^[a-z]{2,3}(-[a-zA-Z]{2,4})*$/.test(args[i + 1]))
+    throw new Error(`--language must be a BCP 47 tag like 'ar', 'fa', 'ur' (got "${args[i + 1]}")`);
+  opts.language = args[i + 1];
+  return i + 1;
+},
+
+'--script': (args, i, opts) => {
+  if (!/^[A-Z][a-z]{3}$/.test(args[i + 1]))
+    throw new Error(`--script must be ISO 15924 like 'Arab', 'Hebr', 'Latn' (got "${args[i + 1]}")`);
+  opts.script = args[i + 1];
+  return i + 1;
+},
+```
+
+Auto-enable `complexShaping` when `--charset arabic/persian/urdu/hebrew` is passed via the existing `--charset` handler.
+
+Add to `showHelp()`:
+
+```
+--charset, -c          Preset: ascii, alphanumeric, latin, cyrillic,
+                       arabic, persian, urdu, hebrew (default: latin)
+--direction            Text direction: ltr | rtl (auto-detected from charset)
+--language             BCP 47 language tag: ar, fa, ur, he, hi, ...
+--script               ISO 15924 script code: Arab, Hebr, Deva, Thai, ...
+--complex-shaping      Enable HarfBuzz shaping (auto for arabic/persian/urdu/hebrew)
+--no-complex-shaping   Disable shaping (fastest but incorrect for Arabic)
+```
+
+Example usage:
+
+```bash
+npx universal-msdf "Noto Sans Arabic" --charset arabic --out ./assets
+npx universal-msdf "Vazirmatn" --charset persian --language fa --out ./assets
+npx universal-msdf "Noto Sans Hebrew" --charset hebrew --language he --out ./assets
+npx universal-msdf "./fonts/MyFont.ttf" --charset "بتثجحخد" --complex-shaping --direction rtl --language ar
+```
+
+---
+
+## 6. Test Coverage
+
+### 6.1 `test/script-detector.test.ts`
+
+```typescript
+it('detects Arabic as RTL complex script')
+it('detects Hebrew as RTL complex script')
+it('returns non-complex for Latin-only charset')
+it('returns the dominant script for mixed Arabic+Latin charset')
+it('isComplexScriptCodepoint returns false for U+0041 (A) and true for U+0628 (ب)')
+```
+
+### 6.2 `test/presentation-forms.test.ts`
+
+```typescript
+it('expands ب (Beh U+0628) to all four presentation form codepoints')
+it('adds Lam-Alef ligatures when ل is present in charset')
+it('preserves non-Arabic codepoints unchanged')
+it('right-joining letters (ر, ز, د) only get isolated+final forms (no init/medi)')
+```
+
+### 6.3 `test/shaper.test.ts`
+
+These require a real Arabic font in `test/fixtures/`. Acquire Noto Sans Arabic TTF under the SIL Open Font License.
+
+```typescript
+it('getRequiredGlyphIds returns more glyph IDs than input codepoints for Arabic')
+it('captures the Lam-Alef mandatory ligature as a single glyph')
+it('deduplicates glyph IDs across contextual samples')
+it('Persian language tag produces different Yeh glyph from Arabic language tag')
+it('non-complex characters (Latin) produce exactly one glyph each')
+it('glyph ID 0 (.notdef) is excluded from results')
+it('clearShaperCache() empties the face and shaping caches')
+```
+
+### 6.4 `test/glyph-loader.test.ts`
+
+```typescript
+it('loads glyphs into gen._glyphs after loadFont()')
+it('assigns PUA codepoints to contextual form glyphs without a Unicode codepoint')
+it('assigns source unicode to non-shaped glyphs')
+it('skips glyph ID 0')
+it('gen.packGlyphs() succeeds after loadGlyphsByIds()')
+```
+
+### 6.5 `test/converter.test.ts` additions
+
+```typescript
+describe('Arabic shaping path', () => {
+  it('calls getRequiredGlyphIds when complexShaping is true')
+  it('calls loadGlyphsByIds instead of gen.loadGlyphs for complex charset')
+  it('Latin charset with no shaping option is unaffected (gen.loadGlyphs called normally)')
+  it('falls back to presentation-forms when harfbuzzjs throws')
+  it('auto-detects complex script from charset content when complexShaping is unset')
+})
+```
+
+### 6.6 Font fixtures for tests
+
+Download and commit to `test/fixtures/` (all SIL Open Font License):
+- `NotoSansArabic-Regular.ttf` — full GSUB Arabic support, recommended reference
+- `NotoSansHebrew-Regular.ttf` — Hebrew
+
+Do NOT commit fonts to the main repo beyond the `test/fixtures/` directory.
+
+---
+
+## 7. Atlas Size Guidance
+
+Arabic glyph count estimate (more precise than the 4× figure often cited):
+
+| Category | Count |
+|----------|-------|
+| 28 dual-joining letters × ~3 forms avg | ~84 |
+| Right-joining letters (ر, ز, د, و, etc.) × 2 forms | ~16 |
+| Common ligatures (Lam-Alef variants) | ~8 |
+| Tashkil diacritics (usually zero-advance, small) | ~11 |
+| Arabic-Indic numerals | 10 |
+| Punctuation | ~8 |
+| **Total (Arabic full)** | **~137–145 glyphs** |
+
+This is roughly **1.5× Latin**, not 4×. The 4× figure is only valid if you assume all 28 letters × 4 forms = 112 and ignore that right-joining letters have only 2 forms.
+
+Recommended minimum atlas sizes:
+
+| Charset | fontSize 48 | fontSize 64 |
+|---------|------------|------------|
+| arabic (no Tashkil) | 1024×1024 | 2048×1024 |
+| arabic (with Tashkil) | 2048×1024 | 2048×2048 |
+| persian / urdu | 2048×2048 | 4096×2048 |
+| hebrew | 512×512 | 1024×512 |
+
+No changes needed to the existing `packGlyphs` configuration or multi-page naming — they handle this automatically.
 
 ---
 
 ## 8. Phased Implementation Checklist
 
-### Phase 1 — Charsets and infrastructure (no HarfBuzz yet)
-- [ ] Add `src/shaper/charset-presets.ts`
-- [ ] Update `src/utils.ts` to import and expose complex presets
-- [ ] Update `CharsetName` type in `src/types.ts`
-- [ ] Add charset preset tests in `test/charset-presets.test.ts`
-- [ ] Verify 100% coverage maintained
+### Phase 0 — Prerequisites (do this before touching any source file)
 
-### Phase 2 — HarfBuzz integration
-- [ ] Install `harfbuzzjs` as optional peer dependency
-- [ ] Add `src/shaper/harfbuzz.ts`
-- [ ] Add `src/shaper/text-shaper.ts`
-- [ ] Write unit tests with a real Arabic font (Noto Sans Arabic)
-- [ ] Verify `hbShape()` returns correct glyph IDs for "لا" (should be 1 ligature)
+- [ ] Run `scripts/verify-msdfgen-api.mjs` — confirm `_loadGlyph` is exposed
+- [ ] Run `scripts/verify-harfbuzz.mjs` with Noto Sans Arabic — confirm Lam-Alef collapses to 1 glyph
+- [ ] Confirm `harfbuzzjs` version: `npm info harfbuzzjs version` (minimum 0.3.6)
+- [ ] Acquire test font fixtures: NotoSansArabic-Regular.ttf, NotoSansHebrew-Regular.ttf
+
+### Phase 1 — Charsets and detection (no HarfBuzz yet)
+
+- [ ] `src/script-detector.ts` + `test/script-detector.test.ts`
+- [ ] `src/presentation-forms.ts` + `test/presentation-forms.test.ts`
+- [ ] New charset presets in `src/utils.ts` (arabic, persian, urdu, hebrew)
+- [ ] `CharsetName` type extension in `src/types.ts`
+- [ ] 100% coverage maintained
+
+### Phase 2 — Shaping engine
+
+- [ ] Install `harfbuzzjs`, add to `peerDependencies` as optional
+- [ ] `src/shaper.ts` + `test/shaper.test.ts`
+- [ ] Validate: Lam-Alef returns 1 glyph ID (the critical integration test)
+- [ ] Validate: Persian `language: 'fa'` produces different Yeh form than `language: 'ar'`
 
 ### Phase 3 — Glyph loader and converter integration
-- [ ] Add `src/shaper/glyph-loader.ts`
-- [ ] Update `ConvertJobOptions` in `converter-worker.ts` to include `shaping`
-- [ ] Make `runConversion` async
-- [ ] Add the shaped/plain branch in `runConversion`
-- [ ] Update `converter.ts` to pass `shaping` through job options
-- [ ] Add `shaping` to `GenerateOptions` in `types.ts`
-- [ ] Update worker thread `await` usage
-- [ ] Write converter tests for the Arabic shaping path
 
-### Phase 4 — CLI and example
-- [ ] Add `--arabic`, `--script`, `--direction`, `--language` flags to `cli.ts`
-- [ ] Add `examples/arabic.js` demonstrating Noto Sans Arabic generation
-- [ ] Update README generation options table
+- [ ] `src/glyph-loader.ts` + `test/glyph-loader.test.ts`
+- [ ] `runConversion` in `converter-worker.ts` made async + shaping branch added
+- [ ] `GenerateOptions` extended (complexShaping, script, direction, language)
+- [ ] `index.ts` auto-detection defaults
+- [ ] Full existing test suite must pass with zero regressions
 
-### Phase 5 — Validation and release
-- [ ] Run full test suite: `npm test`
-- [ ] Confirm 100% coverage: `npm run coverage`
-- [ ] Confirm biome clean: `npx biome lint src/ test/`
-- [ ] Confirm typecheck: `npx tsc --noEmit`
-- [ ] Confirm build: `npm run build`
-- [ ] Test with a real Arabic font end-to-end: `node examples/arabic.js`
-- [ ] Bump version to `1.11.0`, update CHANGELOG, push
+### Phase 4 — Fetcher, CLI, and examples
+
+- [ ] `src/fetcher/google-fonts.ts` — subset hint + verbose log
+- [ ] `src/cli.ts` — new flags with validation
+- [ ] `examples/arabic.js` end-to-end demo with Noto Sans Arabic
+
+### Phase 5 — QA and performance
+
+- [ ] Integration tests with 3+ Arabic fonts from Google Fonts
+- [ ] Memory profile: confirm no HarfBuzz heap leak across 100 sequential calls
+- [ ] Benchmark: shaping overhead vs rasterization overhead (expected: shaping < 5ms, rasterization > 100ms)
+- [ ] Verify `--format both` (JSON + FNT) outputs valid BMFont for Arabic
+- [ ] Verify re-use/cache system with Arabic identity slugs
+
+### Phase 6 — Documentation and release
+
+- [ ] Update README: charset presets table, Arabic CLI examples, renderer guidance
+- [ ] CHANGELOG entry (see below)
+- [ ] Version bump to **2.0.0**
 
 ---
 
-## 9. Version and Changelog Entry
+## 9. Version and Changelog
 
-This is a **minor** version bump (`1.10.0` → `1.11.0`) because:
-- New `shaping` option in `GenerateOptions` is additive and backward-compatible
-- New charset presets are additive
-- No breaking changes to existing public API
-
-Suggested CHANGELOG entry:
+This is a **major** version bump (`1.10.0` → `2.0.0`) because:
+- New optional peer dependency (`harfbuzzjs`, +1.2MB package size) — users must be aware
+- Behaviour change: `charset: 'arabic'` now auto-enables shaping (was previously unsupported)
+- `runConversion` signature changes from sync to async
 
 ```markdown
-## [1.11.0] - YYYY-MM-DD
+## [2.0.0] - YYYY-MM-DD
 
 ### Added
-- **Complex Script Shaping**: Arabic, Hebrew, Persian, Urdu, Devanagari, and other
-  complex scripts are now supported via HarfBuzz WASM (optional peer dependency:
-  `harfbuzzjs`). Contextual glyph forms (init/medi/fina/isol), mandatory ligatures
-  (Lam-Alef), and GSUB substitutions are all resolved before atlas generation.
-- **New charset presets**: `arabic`, `arabic-full`, `persian`, `urdu`, `hebrew`,
-  `devanagari` added to `GenerateOptions.charset`.
-- **`shaping` option**: New `GenerateOptions.shaping` field accepts `script`,
-  `direction`, and `language` for explicit shaping control.
-- **CLI flags**: `--arabic`, `--script`, `--direction`, `--language`.
+- **Arabic, Persian, Urdu, Hebrew charset presets** — pass `charset: 'arabic'`,
+  `'persian'`, `'urdu'`, or `'hebrew'` to `GenerateOptions`.
+- **Complex script shaping via HarfBuzz** (`complexShaping: true`): all contextual
+  glyph forms (init/medi/fina/isol), mandatory ligatures (Lam-Alef), and GSUB
+  substitutions are resolved before atlas generation. Requires optional peer
+  dependency `harfbuzzjs`.
+- **Auto-detection**: HarfBuzz shaping is automatically enabled when a charset
+  containing Arabic/Hebrew/Indic codepoints is detected, with no configuration needed.
+- **`script`, `direction`, `language` options** for explicit shaping control.
+- **Presentation Forms fallback** (`shapingEngine: 'presentation-forms'`): if
+  `harfbuzzjs` is not installed or the font lacks GSUB, the generator falls back
+  to Unicode Presentation Forms where available.
+- CLI flags: `--complex-shaping`, `--no-complex-shaping`, `--direction`, `--language`, `--script`.
 
 ### Changed
-- `runConversion` in `converter-worker.ts` is now `async` (no breaking change to
-  public API; the worker and converter already await it).
+- `runConversion` in `converter-worker.ts` is now `async` (no public API impact).
+
+### Breaking
+- New optional peer dependency `harfbuzzjs` (>=0.3.6) required for Arabic/Hebrew shaping.
+  Install with: `npm install harfbuzzjs`
+  If not installed, Arabic charsets fall back to Presentation Forms with a console warning.
 ```
+
+---
+
+## 10. Known Limitations (Cannot Be Fixed)
+
+Document these explicitly in the README.
+
+**Kashida (Tatweel) justification.** Arabic text justification stretches letters by repeating the Kashida glyph (U+0640). A static atlas cannot encode an infinitely-tileable glyph. Include U+0640 in the charset (it is in the `arabic` preset). The renderer is responsible for tiling it.
+
+**Tashkil anchor positioning.** Diacritics (Fathah, Dammah, etc.) in high-quality Arabic use GPOS anchor points — a per-letter coordinate for each diacritic attachment. The BMFont format stores only a fixed `xoffset`/`yoffset`. Diacritic positioning in MSDF atlases is therefore approximate. For most UI text this is adequate; for Quranic or liturgical text it is not.
+
+**Nastaliq (Urdu calligraphic) layout.** Urdu Nastaliq fonts have a diagonal baseline — letters descend as they connect rightward. The BMFont model assumes a horizontal baseline. Atlases for Nastaliq fonts are valid, but the renderer must implement the diagonal baseline algorithm. Standard PixiJS `BitmapText` does not support this.
+
+**Ligatures beyond Lam-Alef.** Fonts for Quranic text may contain 3–5 character ligatures. The shaper covers standard ligature pairs. Fonts with unusual ligatures may require a future `textSamples` option to pass representative text directly to the shaper.
+
+**Color fonts (COLR/CPAL).** MSDF is monochrome. Color layers are silently ignored and only the base outline is rasterized.
+
+**CJK note (not a limitation).** CJK does not require HarfBuzz shaping (no contextual forms). The existing `gen.loadGlyphs(codepoints)` path works correctly for CJK. The main CJK concern is atlas size (20,000+ glyphs) which is handled by `streamAtlases: true`.
