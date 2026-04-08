@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MSDFConverter, { getSharedConverter } from '../src/converter.js';
+import { runConversion } from '../src/converter-worker.js';
 
 // ── Mock msdfgen-wasm ────────────────────────────────────────────────────────
 // vi.mock is hoisted — the factory cannot reference top-level variables.
@@ -18,6 +19,26 @@ vi.mock('node:module', () => ({
   createRequire: vi.fn().mockReturnValue({
     resolve: vi.fn().mockReturnValue('/fake/msdfgen.wasm'),
   }),
+}));
+
+// ── Mock node:worker_threads ─────────────────────────────────────────────────
+// Hoisted refs so they can be accessed from within vi.mock factory and tests.
+const mockWorkerOnce = vi.hoisted(() => vi.fn());
+const mockWorkerOn = vi.hoisted(() => vi.fn());
+const mockWorkerOff = vi.hoisted(() => vi.fn());
+const mockWorkerPostMessage = vi.hoisted(() => vi.fn());
+const mockWorkerTerminate = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock('node:worker_threads', () => ({
+  // biome-ignore lint/style/useNamingConvention: Worker is a class constructor name
+  Worker: vi.fn().mockImplementation(() => ({
+    once: mockWorkerOnce,
+    on: mockWorkerOn,
+    off: mockWorkerOff,
+    postMessage: mockWorkerPostMessage,
+    terminate: mockWorkerTerminate,
+  })),
+  parentPort: null,
 }));
 
 // ── Factory helpers ────────────────────────────────────────────────────────
@@ -178,6 +199,18 @@ describe('MSDFConverter', () => {
       const r = await converter.convert(makeBuf(), 'MyFont');
       if (!r.success) throw new Error(r.error);
       expect(r.atlases[0].filename).toBe('MyFont.png');
+    });
+
+    it('inline path: streams atlases via atlasCallback — not accumulated in result.atlases', async () => {
+      const received: Array<{ filename: string }> = [];
+      const r = await converter.convert(makeBuf(), 'Stream', {}, async (atlas) => {
+        received.push({ filename: atlas.filename });
+      });
+      if (!r.success) throw new Error(r.error);
+      expect(received).toHaveLength(1);
+      expect(received[0].filename).toBe('Stream.png');
+      // When atlasCallback is provided, atlases are NOT accumulated
+      expect(r.atlases).toHaveLength(0);
     });
 
     it('zero-size glyphs produce xoffset=0 and yoffset=0', async () => {
@@ -526,5 +559,454 @@ describe('MSDFConverter', () => {
       // Already disposed or never created
       await expect(disposeSharedConverter()).resolves.toBeUndefined();
     });
+  });
+});
+
+// ── runConversion (converter-worker.ts) ──────────────────────────────────────
+
+describe('runConversion', () => {
+  let localGen: ReturnType<typeof makeGenInstance>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { Msdfgen } = await import('msdfgen-wasm');
+    const mock = Msdfgen as unknown as { create: ReturnType<typeof vi.fn> };
+    localGen = makeGenInstance();
+    mock.create.mockResolvedValue(localGen);
+  });
+
+  it('invokes onAtlas once per bin and returns layout with correct pages/chars', () => {
+    const atlasCalls: Array<{ filename: string; index: number; total: number }> = [];
+
+    const layout = runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'TestFont',
+      { fontSize: 48, fieldRange: 4 },
+      (filename, _texture, index, total) => {
+        atlasCalls.push({ filename, index, total });
+      },
+    );
+
+    expect(atlasCalls).toHaveLength(1);
+    expect(atlasCalls[0].filename).toBe('TestFont.png');
+    expect(atlasCalls[0].index).toBe(0);
+    expect(atlasCalls[0].total).toBe(1);
+    expect(layout.pages).toEqual(['TestFont.png']);
+    expect(layout.chars).toHaveLength(1);
+    expect(layout.chars[0].char).toBe('A');
+    expect(layout.distanceField.fieldType).toBe('msdf');
+    expect(layout.distanceField.distanceRange).toBe(4);
+  });
+
+  it('uses indexed filenames when packGlyphs returns multiple bins', () => {
+    const bin2 = { width: 256, height: 256, rects: [] };
+    localGen = makeGenInstance({ packGlyphs: vi.fn().mockReturnValue([makeBin(), bin2]) });
+    const filenames: string[] = [];
+
+    runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'Multi',
+      { fontSize: 48, fieldRange: 4 },
+      (filename) => filenames.push(filename),
+    );
+
+    expect(filenames).toEqual(['Multi-0.png', 'Multi-1.png']);
+  });
+
+  it('skips loadGlyphs and packGlyphs when charset resolves to empty', () => {
+    const atlasCalls: string[] = [];
+
+    const layout = runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'Empty',
+      { charset: [] as never },
+      (filename) => atlasCalls.push(filename),
+    );
+
+    expect(atlasCalls).toHaveLength(0);
+    expect(layout.chars).toHaveLength(0);
+    expect(layout.pages).toHaveLength(0);
+    expect(localGen.loadGlyphs).not.toHaveBeenCalled();
+    expect(localGen.packGlyphs).not.toHaveBeenCalled();
+  });
+
+  it('respects fixOverlaps=false option', () => {
+    runConversion(localGen as never, new Uint8Array(4), 'F', { fixOverlaps: false }, () => {});
+    expect(localGen.loadGlyphs).toHaveBeenCalledWith(expect.any(Array), { preprocess: false });
+  });
+
+  it('builds kerning pairs in layout', () => {
+    const glyphB = makeGlyph(66);
+    const glyphWithKern = makeGlyph(65, [[glyphB, -0.05]]);
+    localGen = makeGenInstance({
+      packGlyphs: vi.fn().mockReturnValue([makeBin([makeRect(glyphWithKern)])]),
+    });
+
+    const layout = runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'K',
+      { fontSize: 48, fieldRange: 4 },
+      () => {},
+    );
+
+    expect(layout.kernings).toHaveLength(1);
+    expect(layout.kernings[0].first).toBe(65);
+    expect(layout.kernings[0].second).toBe(66);
+  });
+
+  it('uses custom textureSize when provided', () => {
+    runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'F',
+      { textureSize: [1024, 1024] },
+      () => {},
+    );
+    expect(localGen.packGlyphs).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ maxWidth: 1024, maxHeight: 1024 }),
+    );
+  });
+
+  it('builds zero-offset glyphs for zero-size rects', () => {
+    localGen = makeGenInstance({
+      packGlyphs: vi
+        .fn()
+        .mockReturnValue([makeBin([makeRect(makeGlyph(), { width: 0, height: 0 })])]),
+    });
+    const layout = runConversion(localGen as never, new Uint8Array(4), 'F', {}, () => {});
+    expect(layout.chars[0].xoffset).toBe(0);
+    expect(layout.chars[0].yoffset).toBe(0);
+  });
+});
+
+// ── Worker thread path (_runViaWorker) ────────────────────────────────────────
+
+describe('Worker thread path', () => {
+  let savedVitest: string | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { Msdfgen } = await import('msdfgen-wasm');
+    const mock = Msdfgen as unknown as { create: ReturnType<typeof vi.fn> };
+    mock.create.mockResolvedValue(makeGenInstance());
+
+    // Unset VITEST so convert() routes to _runViaWorker
+    savedVitest = process.env.VITEST;
+    delete process.env.VITEST;
+  });
+
+  afterEach(async () => {
+    process.env.VITEST = savedVitest;
+  });
+
+  it('dispatches job and resolves with MSDFSuccess when worker sends result', async () => {
+    // Simulate worker 'ready' on once('message')
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+
+    // Capture the message handler registered by _runViaWorker
+    let messageHandler: ((m: unknown) => unknown) | undefined;
+    mockWorkerOn.mockImplementation((_evt: string, handler: (m: unknown) => unknown) => {
+      messageHandler = handler;
+    });
+
+    // When postMessage is called, simulate atlas → result messages
+    mockWorkerPostMessage.mockImplementation(() => {
+      Promise.resolve().then(async () => {
+        await messageHandler?.({
+          type: 'atlas',
+          filename: 'F.png',
+          texture: new Uint8Array(4),
+          index: 0,
+          total: 1,
+        });
+        await messageHandler?.({
+          type: 'result',
+          layout: {
+            pages: ['F.png'],
+            chars: [],
+            kernings: [],
+            info: {
+              face: 'F',
+              size: 48,
+              bold: 0,
+              italic: 0,
+              charset: [],
+              unicode: 1,
+              stretchH: 100,
+              smooth: 1,
+              aa: 1,
+              padding: [0, 0, 0, 0],
+              spacing: [0, 0],
+              outline: 0,
+            },
+            common: {
+              lineHeight: 55,
+              base: 38,
+              scaleW: 512,
+              scaleH: 512,
+              pages: 1,
+              packed: 0,
+              alphaChnl: 0,
+              redChnl: 0,
+              greenChnl: 0,
+              blueChnl: 0,
+            },
+            distanceField: { fieldType: 'msdf', distanceRange: 4, type: 'msdf', range: 4 },
+          },
+        });
+      });
+    });
+
+    const progressFn = vi.fn();
+    const c = new MSDFConverter();
+    const result = await c.convert(makeBuf(), 'F', {
+      generationTimeout: 5000,
+      onProgress: progressFn,
+    });
+    await c.dispose();
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.fontName).toBe('F');
+    expect(result.atlases).toHaveLength(1);
+    expect(result.atlases[0].filename).toBe('F.png');
+    expect(progressFn).toHaveBeenCalledWith(100, 1, 1);
+  });
+
+  it('returns MSDFFailure when worker sends error message', async () => {
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+
+    let messageHandler: ((m: unknown) => unknown) | undefined;
+    mockWorkerOn.mockImplementation((_evt: string, handler: (m: unknown) => unknown) => {
+      messageHandler = handler;
+    });
+
+    mockWorkerPostMessage.mockImplementation(() => {
+      Promise.resolve().then(async () => {
+        await messageHandler?.({ type: 'error', message: 'wasm exploded' });
+      });
+    });
+
+    const c = new MSDFConverter();
+    const result = await c.convert(makeBuf(), 'F');
+    await c.dispose();
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toContain('wasm exploded');
+  });
+
+  it('calls atlasCallback instead of accumulating when provided', async () => {
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+
+    let messageHandler: ((m: unknown) => unknown) | undefined;
+    mockWorkerOn.mockImplementation((_evt: string, handler: (m: unknown) => unknown) => {
+      messageHandler = handler;
+    });
+
+    mockWorkerPostMessage.mockImplementation(() => {
+      Promise.resolve().then(async () => {
+        await messageHandler?.({
+          type: 'atlas',
+          filename: 'F.png',
+          texture: new Uint8Array(4),
+          index: 0,
+          total: 1,
+        });
+        await messageHandler?.({
+          type: 'result',
+          layout: {
+            pages: ['F.png'],
+            chars: [],
+            kernings: [],
+            info: {
+              face: 'F',
+              size: 48,
+              bold: 0,
+              italic: 0,
+              charset: [],
+              unicode: 1,
+              stretchH: 100,
+              smooth: 1,
+              aa: 1,
+              padding: [0, 0, 0, 0],
+              spacing: [0, 0],
+              outline: 0,
+            },
+            common: {
+              lineHeight: 55,
+              base: 38,
+              scaleW: 512,
+              scaleH: 512,
+              pages: 1,
+              packed: 0,
+              alphaChnl: 0,
+              redChnl: 0,
+              greenChnl: 0,
+              blueChnl: 0,
+            },
+            distanceField: { fieldType: 'msdf', distanceRange: 4, type: 'msdf', range: 4 },
+          },
+        });
+      });
+    });
+
+    const callbackAtlases: string[] = [];
+    const c = new MSDFConverter();
+    const result = await c.convert(makeBuf(), 'F', {}, async (atlas) => {
+      callbackAtlases.push(atlas.filename);
+    });
+    await c.dispose();
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(callbackAtlases).toEqual(['F.png']);
+    // atlases are NOT accumulated when callback is provided
+    expect(result.atlases).toHaveLength(0);
+  });
+
+  it('terminates worker and rejects on timeout', async () => {
+    vi.useFakeTimers();
+
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+    // Never calls the message handler — simulates a hung worker
+    mockWorkerOn.mockImplementation(() => {});
+    mockWorkerPostMessage.mockImplementation(() => {});
+
+    const c = new MSDFConverter();
+    const promise = c.convert(makeBuf(), 'timeout-test', { generationTimeout: 100 });
+    // Attach catch immediately to prevent unhandled rejection tracking
+    let capturedError: Error | undefined;
+    const caught = promise.catch((e) => {
+      capturedError = e as Error;
+    });
+
+    await vi.advanceTimersByTimeAsync(101);
+    await caught;
+
+    expect(capturedError?.message).toMatch('msdfgen-wasm timed out after 100ms for "timeout-test"');
+    expect(mockWorkerTerminate).toHaveBeenCalled();
+
+    vi.useRealTimers();
+    await c.dispose();
+  });
+
+  it('respawns worker after timeout nullifies it', async () => {
+    vi.useFakeTimers();
+
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+    mockWorkerOn.mockImplementation(() => {});
+    mockWorkerPostMessage.mockImplementation(() => {});
+
+    const c = new MSDFConverter();
+    // First call — times out
+    const p = c.convert(makeBuf(), 'first', { generationTimeout: 50 });
+    let firstError: Error | undefined;
+    const caught = p.catch((e) => {
+      firstError = e as Error;
+    });
+    await vi.advanceTimersByTimeAsync(51);
+    await caught;
+    expect(firstError?.message).toMatch('timed out');
+
+    vi.useRealTimers();
+
+    // After timeout, this.worker is null — next call should respawn
+    let messageHandler: ((m: unknown) => unknown) | undefined;
+    mockWorkerOn.mockImplementation((_evt: string, handler: (m: unknown) => unknown) => {
+      messageHandler = handler;
+    });
+    mockWorkerPostMessage.mockImplementation(() => {
+      Promise.resolve().then(async () => {
+        await messageHandler?.({
+          type: 'result',
+          layout: {
+            pages: [],
+            chars: [],
+            kernings: [],
+            info: {
+              face: 'F',
+              size: 48,
+              bold: 0,
+              italic: 0,
+              charset: [],
+              unicode: 1,
+              stretchH: 100,
+              smooth: 1,
+              aa: 1,
+              padding: [0, 0, 0, 0],
+              spacing: [0, 0],
+              outline: 0,
+            },
+            common: {
+              lineHeight: 55,
+              base: 38,
+              scaleW: 0,
+              scaleH: 0,
+              pages: 0,
+              packed: 0,
+              alphaChnl: 0,
+              redChnl: 0,
+              greenChnl: 0,
+              blueChnl: 0,
+            },
+            distanceField: { fieldType: 'msdf', distanceRange: 4, type: 'msdf', range: 4 },
+          },
+        });
+      });
+    });
+
+    const result = await c.convert(makeBuf(), 'second', { generationTimeout: 5000 });
+    expect(result.success).toBe(true);
+    await c.dispose();
+  });
+
+  it('dispose() terminates the worker thread', async () => {
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'ready' });
+    });
+
+    const c = new MSDFConverter();
+    await c.initialize();
+
+    // Force worker to be set by triggering _spawnWorker via initialize path
+    // (workerReady is set in _doInitialize when !VITEST)
+    // We need to await workerReady explicitly
+    await (c as never as { workerReady: Promise<void> }).workerReady;
+
+    await c.dispose();
+
+    expect(mockWorkerTerminate).toHaveBeenCalled();
+  });
+
+  it('rejects when worker sends non-ready message during initialisation', async () => {
+    // Simulate worker sending an error message instead of 'ready'
+    mockWorkerOnce.mockImplementation((_evt: string, handler: (m: unknown) => void) => {
+      handler({ type: 'error', message: 'init failed' });
+    });
+
+    const c = new MSDFConverter();
+    let capturedErr: Error | undefined;
+    const p = c.convert(makeBuf(), 'F').catch((e) => {
+      capturedErr = e as Error;
+    });
+    await p;
+    expect(capturedErr?.message).toContain('Worker failed to initialise');
+    await c.dispose();
   });
 });

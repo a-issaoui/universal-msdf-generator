@@ -22,7 +22,7 @@ function validateFontBuffer(buffer: Buffer): boolean {
 async function saveMSDFOutput(
   result: MSDFResult,
   outputDir: string,
-  options: { filename?: string; format?: OutputFormat } = {},
+  options: { filename?: string; format?: OutputFormat; skipTextures?: boolean } = {},
 ): Promise<string[]> {
   if (!result.success || result.cached) return [];
   const res = result as MSDFSuccess;
@@ -35,9 +35,11 @@ async function saveMSDFOutput(
 
   const outputs: string[] = [];
 
-  // 1. Save Textures
-  const texturePaths = await writeTextures(res, dir, filename);
-  outputs.push(...texturePaths);
+  // 1. Save Textures (skipped when streaming mode already wrote them)
+  if (!options.skipTextures) {
+    const texturePaths = await writeTextures(res, dir, filename);
+    outputs.push(...texturePaths);
+  }
 
   // 2. Save JSON Layout
   if (format === 'json' || format === 'both' || format === 'all') {

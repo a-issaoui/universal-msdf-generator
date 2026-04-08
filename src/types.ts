@@ -162,6 +162,13 @@ export interface GenerateOptions {
   /** Max concurrent fonts when using generateMultiple. Default: unlimited. */
   concurrency?: number;
   /**
+   * When true and `outputDir` is set, atlas PNG images are written to disk immediately
+   * as each page is rendered and are NOT retained in `MSDFSuccess.atlases`. Keeps peak
+   * memory at O(1 atlas page) regardless of charset size — critical for large charsets
+   * such as full CJK (20 000+ glyphs). Default: false.
+   */
+  streamAtlases?: boolean;
+  /**
    * Base directory for local font file resolution.
    * When set, all local paths are resolved relative to this directory and
    * path traversal outside it is blocked. Strongly recommended for server use.

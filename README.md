@@ -147,8 +147,9 @@ const results = await generateMultiple(['Roboto', 'Open Sans', 'Lato'], {
 | `reuseExisting` | `boolean` | `true` | Skip generation if output files already exist |
 | `force` | `boolean` | `false` | Regenerate even when `reuseExisting` is set |
 | `saveFontFile` | `boolean` | `false` | Save the downloaded font binary to the `outputDir` |
+| `streamAtlases` | `boolean` | `false` | Write each atlas page to `outputDir` immediately as it is rendered (O(1) peak memory — ideal for large CJK charsets). Requires `outputDir`. |
 | `concurrency` | `number` | unlimited | Max parallel fonts in `generateMultiple` |
-| `generationTimeout` | `number` | `60000` | Max ms before a generation attempt times out |
+| `generationTimeout` | `number` | `60000` | Max ms before a generation attempt times out. On expiry the WASM worker thread is forcibly terminated. |
 | `verbose` | `boolean` | `true` | Log progress to stdout |
 | `onProgress` | `function` | — | `(progress, completed, total) => void` progress callback |
 

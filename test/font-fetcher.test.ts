@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { extractFontNameFromUrl } from '../src/fetcher/url-handler.js';
 import FontFetcher, { googleFontsRateLimiter } from '../src/font-fetcher.js';
 import type { FontSource } from '../src/types.js';
 
@@ -13,21 +14,6 @@ vi.mock('node:fs', () => ({
 
 // Mock DNS resolution via constructor instead of global mock for better ESM reliability
 const mockDnsResolver = vi.fn().mockResolvedValue('1.1.1.1');
-
-// Helper type to access private FontFetcher methods in tests
-type FontFetcherPrivate = {
-  detectSourceType(source: FontSource | { byteLength: number }): Promise<string>;
-  extractLatinFontUrl(css: string, format: 'woff' | 'ttf' | 'any'): string | null;
-  extractFontNameFromUrl(url: string): string;
-  makeRequest(
-    url: string,
-    options?: { userAgent?: string; signal?: AbortSignal },
-  ): Promise<Response>;
-  validateUrlSecurity(url: URL): void;
-  sleep(ms: number): Promise<void>;
-};
-
-const priv = (f: FontFetcher) => f as unknown as FontFetcherPrivate;
 
 // Typed mock fetch helpers
 const mockFetch = vi.fn();
@@ -79,20 +65,20 @@ describe('FontFetcher', () => {
 
   describe('detectSourceType', () => {
     it('should detect Google Font names', async () => {
-      expect(await priv(fetcher).detectSourceType('Open Sans')).toBe('google');
-      expect(await priv(fetcher).detectSourceType('Roboto-Bold')).toBe('google');
+      expect(await fetcher._detectSourceType('Open Sans')).toBe('google');
+      expect(await fetcher._detectSourceType('Roboto-Bold')).toBe('google');
     });
 
     it('should detect URLs', async () => {
-      expect(await priv(fetcher).detectSourceType('https://example.com/font.ttf')).toBe('url');
-      expect(await priv(fetcher).detectSourceType('http://fonts.com/test.woff')).toBe('url');
+      expect(await fetcher._detectSourceType('https://example.com/font.ttf')).toBe('url');
+      expect(await fetcher._detectSourceType('http://fonts.com/test.woff')).toBe('url');
     });
 
     it('should detect local files', async () => {
       vi.mocked(fs.stat).mockResolvedValue({
         isFile: () => true,
       } as unknown as import('node:fs').Stats);
-      expect(await priv(fetcher).detectSourceType('./font.ttf')).toBe('local');
+      expect(await fetcher._detectSourceType('./font.ttf')).toBe('local');
     });
 
     it('should handle non-file local paths (directory)', async () => {
@@ -100,19 +86,19 @@ describe('FontFetcher', () => {
         isFile: () => false,
         isDirectory: () => true,
       } as unknown as import('node:fs').Stats);
-      await expect(priv(fetcher).detectSourceType('./subdir')).rejects.toThrow('is a directory');
+      await expect(fetcher._detectSourceType('./subdir')).rejects.toThrow('is a directory');
     });
 
     it('should handle missing local paths', async () => {
       const err = new Error('ENOENT');
       (err as unknown as { code: string }).code = 'ENOENT';
       vi.mocked(fs.stat).mockRejectedValue(err);
-      await expect(priv(fetcher).detectSourceType('./ghost.ttf')).rejects.toThrow('File not found');
+      await expect(fetcher._detectSourceType('./ghost.ttf')).rejects.toThrow('File not found');
     });
 
     it('should return unknown for other strings', async () => {
       vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
-      expect(await priv(fetcher).detectSourceType('???')).toBe('unknown');
+      expect(await fetcher._detectSourceType('???')).toBe('unknown');
     });
   });
 
@@ -445,7 +431,7 @@ describe('FontFetcher', () => {
           }),
       );
 
-      await expect(priv(shortTimeoutFetcher).makeRequest('http://ex.com')).rejects.toThrow(
+      await expect(shortTimeoutFetcher.networkClient.makeRequest('http://ex.com')).rejects.toThrow(
         /Request timed out/,
       );
     });
@@ -457,7 +443,7 @@ describe('FontFetcher', () => {
         verbose: false,
         dnsResolver: mockDnsResolver,
       });
-      vi.spyOn(priv(retryFetcher), 'sleep').mockResolvedValue(undefined);
+      vi.spyOn(retryFetcher.networkClient, 'sleep').mockResolvedValue(undefined);
 
       await expect(retryFetcher.fetchFromUrl('https://example.com/font.ttf')).rejects.toThrow(
         'Failed after 2 attempts',
@@ -466,7 +452,9 @@ describe('FontFetcher', () => {
 
     it('makeRequest: throws generic error if fetch fails', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
-      await expect(priv(fetcher).makeRequest('https://ex.com')).rejects.toThrow('Network error');
+      await expect(fetcher.networkClient.makeRequest('https://ex.com')).rejects.toThrow(
+        'Network error',
+      );
     });
 
     it('fetchWithRetry: succeeds on second attempt after 500 error', async () => {
@@ -479,7 +467,7 @@ describe('FontFetcher', () => {
         verbose: false,
         dnsResolver: mockDnsResolver,
       });
-      vi.spyOn(priv(retryFetcher), 'sleep').mockResolvedValue(undefined);
+      vi.spyOn(retryFetcher.networkClient, 'sleep').mockResolvedValue(undefined);
 
       const result = await retryFetcher.fetchFromUrl('https://example.com/font.ttf');
       expect(result.source).toBe('url');
@@ -529,12 +517,12 @@ describe('FontFetcher', () => {
 
   describe('utility methods', () => {
     it('extractFontNameFromUrl: handles invalid URL strings', () => {
-      expect(priv(fetcher).extractFontNameFromUrl('not-a-url')).toBe('unknown-font');
+      expect(extractFontNameFromUrl('not-a-url')).toBe('unknown-font');
     });
 
     it('sleep: resolves after timeout', async () => {
       vi.useFakeTimers();
-      const sleepPromise = priv(fetcher).sleep(100);
+      const sleepPromise = fetcher.networkClient.sleep(100);
       vi.advanceTimersByTime(100);
       await expect(sleepPromise).resolves.toBeUndefined();
       vi.useRealTimers();
@@ -558,7 +546,7 @@ describe('FontFetcher', () => {
         isDirectory: () => false,
       } as unknown as import('node:fs').Stats);
       // Must use a path that triggers statForExplicitPath (starts with ./ or ../ or is absolute)
-      const type = await priv(fetcher).detectSourceType('./device-path');
+      const type = await fetcher._detectSourceType('./device-path');
       expect(type).toBe('unknown');
     });
 
@@ -641,7 +629,7 @@ describe('FontFetcher', () => {
 
     it('detectSourceType: handles URL object input correctly', async () => {
       const urlObj = new URL('https://fonts.gstatic.com/test.ttf');
-      const type = await priv(fetcher).detectSourceType(
+      const type = await fetcher._detectSourceType(
         urlObj as unknown as import('../src/types.js').FontSource,
       );
       expect(type).toBe('url');
@@ -669,7 +657,7 @@ describe('FontFetcher', () => {
       vi.mocked(fs.stat).mockResolvedValue({
         isFile: () => true,
       } as unknown as import('node:fs').Stats);
-      const type = await priv(fetcher).detectSourceType('myfont-custom-name-12345.ttf');
+      const type = await fetcher._detectSourceType('myfont-custom-name-12345.ttf');
       expect(type).toBe('local');
     });
 
@@ -684,7 +672,7 @@ describe('FontFetcher', () => {
 
     it('extractFontNameFromUrl: returns unknown-font for URL with no filename path', () => {
       // A URL whose pathname basename after removing the extension is empty
-      expect(priv(fetcher).extractFontNameFromUrl('https://example.com/')).toBe('unknown-font');
+      expect(extractFontNameFromUrl('https://example.com/')).toBe('unknown-font');
     });
 
     it('parseFontFaceBlocks: skips @font-face block without a url() declaration', async () => {
@@ -800,8 +788,7 @@ describe('FontFetcher', () => {
       // Force it by intercepting attemptGoogleFontFetch's underlying fetch via mockFetch
       mockFetch.mockReset();
       mockFetch.mockRejectedValue('primitive-failure'); // Not an instance of Error
-      // biome-ignore lint/suspicious/noExplicitAny: Accessing private method for testing/mocking
-      vi.spyOn(priv(fetcher) as any, 'sleep').mockResolvedValue(undefined);
+      vi.spyOn(fetcher.networkClient, 'sleep').mockResolvedValue(undefined);
 
       const result = fetcher.fetchGoogleFont('Roboto');
       await expect(result).rejects.toThrow('Failed to fetch Google Font'); // Final wrap includes inner msg
@@ -828,8 +815,52 @@ describe('FontFetcher', () => {
       } as unknown as AbortSignal;
 
       await expect(
-        priv(fetcher).makeRequest('https://example.com/font.ttf', { signal }),
+        fetcher.networkClient.makeRequest('https://example.com/font.ttf', { signal }),
       ).rejects.toThrow('Request aborted by external signal');
+    });
+
+    it('GoogleFontsHandler._extractMessage: covers string and non-Error/string branches', async () => {
+      // Spy on networkClient.fetchWithRetry so rejections bypass Error wrapping in fetchWithRetry.
+      // woff + ttf → string (line 208), any → number (line 209)
+      vi.spyOn(fetcher.networkClient, 'fetchWithRetry')
+        .mockRejectedValueOnce('css-string-error') // woff attempt: string → line 208
+        .mockRejectedValueOnce('css-string-error') // ttf attempt: string → line 208
+        .mockRejectedValueOnce(42); // any attempt: number → line 209
+
+      await expect(fetcher.fetchGoogleFont('Roboto')).rejects.toThrow(
+        'Failed to fetch Google Font',
+      );
+    });
+
+    it('LocalFileHandler._resolvePath: returns resolved path when basePath is set and path is valid', async () => {
+      const secureFetcher = new FontFetcher({ basePath: '/secure/dir' });
+      vi.mocked(fs.stat).mockResolvedValue({
+        isFile: () => true,
+        size: 100,
+      } as unknown as import('node:fs').Stats);
+      vi.mocked(fs.readFile).mockImplementation(async () => Buffer.from(ttfMagic()));
+
+      const result = await secureFetcher.fetchLocalFile('fonts/myfont.ttf');
+      expect(result.source).toBe('local');
+      // Path was resolved relative to basePath
+      expect(result.path).toBe('/secure/dir/fonts/myfont.ttf');
+    });
+
+    it('NetworkClient: uses default values when constructed with no options', async () => {
+      const { NetworkClient, DEFAULT_TIMEOUT, DEFAULT_MAX_RETRIES, MAX_DOWNLOAD_SIZE } =
+        await import('../src/fetcher/network.js');
+      const client = new NetworkClient();
+      expect(client.timeout).toBe(DEFAULT_TIMEOUT);
+      expect(client.maxRetries).toBe(DEFAULT_MAX_RETRIES);
+      expect(client.maxDownloadSize).toBe(MAX_DOWNLOAD_SIZE);
+      expect(client.verbose).toBe(true);
+    });
+
+    it('extractMessage: covers all three error type branches directly', async () => {
+      const { extractMessage } = await import('../src/fetcher/network.js');
+      expect(extractMessage(new Error('err-msg'))).toBe('err-msg');
+      expect(extractMessage('string-err')).toBe('string-err');
+      expect(extractMessage(42)).toBe('42');
     });
   });
 });

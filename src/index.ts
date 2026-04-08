@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { AtlasCallback } from './converter.js';
 import MSDFConverter, { getSharedConverter } from './converter.js';
 import type { SecureFetchOptions } from './font-fetcher.js';
 import FontFetcher from './font-fetcher.js';
@@ -96,6 +97,22 @@ async function saveFontToDisk(
   return fontFilePath;
 }
 
+async function setupAtlasStreaming(
+  options: GenerateOptions,
+  identity: string,
+  streamedPaths: string[],
+): Promise<AtlasCallback | undefined> {
+  if (!options.streamAtlases || !options.outputDir) return undefined;
+  const resolvedDir = path.resolve(options.outputDir);
+  await fs.mkdir(resolvedDir, { recursive: true });
+  return async (atlas, index, total) => {
+    const filename = total > 1 ? `${identity}-${index}.png` : `${identity}.png`;
+    const p = path.join(resolvedDir, filename);
+    await fs.writeFile(p, atlas.texture);
+    streamedPaths.push(p);
+  };
+}
+
 async function executeGen(
   source: FontSource,
   identity: string,
@@ -108,7 +125,16 @@ async function executeGen(
     style: options.style,
     preferTTF: options.saveFontFile,
   });
-  const result = await converter.convert(font.buffer, font.name, options);
+
+  // ── Streaming atlas callback (Fix 3+4) ──────────────────────────────────
+  // When streamAtlases + outputDir are set, each atlas page is written to disk
+  // immediately after rendering and NOT buffered in result.atlases. Peak memory
+  // is O(1 atlas page) regardless of total charset size.
+  const streamedAtlasPaths: string[] = [];
+  const atlasCallback = await setupAtlasStreaming(options, identity, streamedAtlasPaths);
+
+  const result = await converter.convert(font.buffer, font.name, options, atlasCallback);
+
   if (result.success) {
     result.fontName = identity;
     result.fontMetadata = {
@@ -118,30 +144,45 @@ async function executeGen(
       decompressionTimeMs: font.metadata?.decompressionTimeMs,
     };
 
-    // Renormalize atlas filenames and layout pages to use identity as the base.
-    // The converter names atlases after font.name (e.g. "Roboto"); we need them
-    // to match the JSON/FNT filename (identity) so all files share a consistent stem.
-    result.atlases = result.atlases.map((atlas, i) => ({
-      ...atlas,
-      filename: result.atlases.length > 1 ? `${identity}-${i}.png` : `${identity}.png`,
-    }));
-    result.data = {
-      ...result.data,
-      pages: result.atlases.map((a) => a.filename),
-    };
+    // Renormalize atlas filenames to identity base (applies to both streaming and normal modes)
+    if (options.streamAtlases && options.outputDir && streamedAtlasPaths.length > 0) {
+      // In streaming mode result.atlases is empty; reconstruct from what we wrote
+      const count = streamedAtlasPaths.length;
+      result.atlases = streamedAtlasPaths.map((_p, i) => ({
+        filename: count > 1 ? `${identity}-${i}.png` : `${identity}.png`,
+        texture: Buffer.alloc(0),
+      }));
+    } else {
+      result.atlases = result.atlases.map((atlas, i) => ({
+        ...atlas,
+        filename: result.atlases.length > 1 ? `${identity}-${i}.png` : `${identity}.png`,
+      }));
+    }
+    result.data = { ...result.data, pages: result.atlases.map((a) => a.filename) };
 
     const fmt = options.outputFormat;
-    let needsXml = false;
-    if (fmt === 'fnt' || fmt === 'both' || fmt === 'all') needsXml = true;
-    if (needsXml) result.xml = XMLGenerator.generate(result.data, identity);
+    if (fmt === 'fnt' || fmt === 'both' || fmt === 'all') {
+      result.xml = XMLGenerator.generate(result.data, identity);
+    }
+
     if (options.outputDir) {
       if (options.verbose) console.log(`Saving to: ${options.outputDir}`);
-      result.savedFiles = await MSDFUtils.saveMSDFOutput(result, options.outputDir, {
-        filename: identity,
-        format: options.outputFormat,
-      });
 
-      // Save the raw font binary alongside the atlas when requested.
+      if (options.streamAtlases) {
+        // Atlases already on disk — only write layout (JSON/FNT) + metadata sidecar
+        const layoutPaths = await MSDFUtils.saveMSDFOutput(result, options.outputDir, {
+          filename: identity,
+          format: options.outputFormat,
+          skipTextures: true,
+        });
+        result.savedFiles = [...streamedAtlasPaths, ...layoutPaths];
+      } else {
+        result.savedFiles = await MSDFUtils.saveMSDFOutput(result, options.outputDir, {
+          filename: identity,
+          format: options.outputFormat,
+        });
+      }
+
       if (options.saveFontFile) {
         result.savedFontFile = await saveFontToDisk(
           font,

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.10.0] - 2026-04-08
+
+### Added
+- **Streaming Atlas Output** (`streamAtlases: boolean`): Atlas pages are now written to disk one at a time as they are rendered, keeping peak memory at O(1 atlas page) regardless of charset size. Ideal for full CJK generation. Set `streamAtlases: true` alongside `outputDir` to enable.
+- **Real WASM Termination**: `MSDFConverter` now runs the WASM computation in a dedicated Node.js `worker_thread`. On timeout, the worker thread is forcibly terminated — killing the WASM CPU task rather than merely abandoning a Promise.
+- **`AtlasCallback` type**: Exported from `converter.ts` for advanced use cases where callers need to intercept each atlas page during generation.
+
+### Changed
+- **`font-fetcher.ts` refactored**: Network, security, Google Fonts, local file, and URL-handler concerns are split into dedicated sub-modules under `src/fetcher/`. Public API is unchanged.
+- **Internal**: Incremental atlas loop replaces the previous bulk `bins.map(createAtlasImage)`, enabling streaming even without an explicit callback.
+
+### Fixed
+- **Code Quality**: Resolved all `biome` complexity warnings by extracting private helper methods (`_executeInlineConversion`, `_handleAtlasMsg`, `_resolveWorkerResult`, `setupAtlasStreaming`).
+
 ## [1.9.0] - 2026-04-08
 
 ### Added

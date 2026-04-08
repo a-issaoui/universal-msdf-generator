@@ -4,6 +4,7 @@ import MSDFUtils from '../src/utils.js';
 
 // Hoisted refs — must be defined before vi.mock factories
 const mockWriteFile = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockMkdir = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockFetch = vi.hoisted(() =>
   vi
     .fn()
@@ -44,9 +45,10 @@ vi.mock('node:fs', () => ({
 }));
 
 vi.mock('node:fs/promises', () => ({
-  default: { writeFile: mockWriteFile, readFile: vi.fn() },
+  default: { writeFile: mockWriteFile, readFile: vi.fn(), mkdir: mockMkdir },
   writeFile: mockWriteFile,
   readFile: vi.fn(),
+  mkdir: mockMkdir,
 }));
 
 vi.mock('../src/font-fetcher.js', () => ({
@@ -448,5 +450,131 @@ describe('Standalone functions', () => {
     await generateMultiple(['M1', 'M2'], { verbose: false });
     expect(disposeSpy).toHaveBeenCalled();
     disposeSpy.mockRestore();
+  });
+});
+
+// ── streamAtlases ─────────────────────────────────────────────────────────────
+
+describe('streamAtlases', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(MSDFUtils.saveMSDFOutput).mockResolvedValue([]);
+    mockFetch.mockResolvedValue({
+      buffer: Buffer.alloc(0),
+      name: 'f.ttf',
+      source: 'google',
+      format: 'ttf',
+    });
+  });
+
+  it('writes each atlas to disk immediately and populates savedFiles', async () => {
+    // Override converter mock to call atlasCallback when provided
+    mockConverterInstance.convert.mockImplementationOnce(
+      async (
+        _buf: Buffer,
+        _name: string,
+        _opts: unknown,
+        atlasCallback:
+          | ((a: { filename: string; texture: Buffer }, i: number, t: number) => Promise<void>)
+          | undefined,
+      ) => {
+        if (atlasCallback) {
+          await atlasCallback({ filename: 'streamed.png', texture: Buffer.alloc(4) }, 0, 1);
+        }
+        return {
+          success: true,
+          data: {
+            info: { face: 'T', size: 32 },
+            common: { lineHeight: 32 },
+            chars: [],
+            kernings: [],
+            pages: [],
+            distanceField: { fieldType: 'msdf', distanceRange: 4 },
+          },
+          atlases: [],
+        };
+      },
+    );
+
+    const gen = new UniversalMSDFGenerator();
+    const result = await gen.generate('StreamTest', {
+      outputDir: './out',
+      streamAtlases: true,
+      verbose: false,
+    });
+    await gen.dispose();
+
+    expect(result.success).toBe(true);
+    // mkdir was called to ensure the output dir exists
+    expect(mockMkdir).toHaveBeenCalled();
+    // writeFile was called for the streamed atlas
+    expect(mockWriteFile).toHaveBeenCalledWith(expect.stringContaining('.png'), expect.any(Buffer));
+    // savedFiles includes the streamed atlas path
+    if (result.success && !result.cached) {
+      expect(result.savedFiles?.some((f) => f.endsWith('.png'))).toBe(true);
+    }
+  });
+
+  it('falls back to normal mode when streamAtlases=false', async () => {
+    const gen = new UniversalMSDFGenerator();
+    const result = await gen.generate('NormalTest', {
+      outputDir: './out',
+      streamAtlases: false,
+      verbose: false,
+    });
+    await gen.dispose();
+
+    expect(result.success).toBe(true);
+    // mkdir should NOT have been called (no streamAtlases path)
+    expect(mockMkdir).not.toHaveBeenCalled();
+  });
+
+  it('does not stream when outputDir is absent even if streamAtlases=true', async () => {
+    const gen = new UniversalMSDFGenerator();
+    // No outputDir → streaming block should not run
+    const result = await gen.generate('NoDir', { streamAtlases: true });
+    await gen.dispose();
+
+    expect(result.success).toBe(true);
+    expect(mockMkdir).not.toHaveBeenCalled();
+  });
+
+  it('streams multiple atlases with indexed filenames (total > 1 branch)', async () => {
+    // Make convert call atlasCallback twice (simulating 2 atlas pages)
+    mockConverterInstance.convert.mockImplementationOnce(
+      async (
+        _buf: Buffer,
+        _name: string,
+        _opts: unknown,
+        atlasCallback:
+          | ((a: { filename: string; texture: Buffer }, i: number, t: number) => Promise<void>)
+          | undefined,
+      ) => {
+        if (atlasCallback) {
+          await atlasCallback({ filename: 'p0.png', texture: Buffer.alloc(4) }, 0, 2);
+          await atlasCallback({ filename: 'p1.png', texture: Buffer.alloc(4) }, 1, 2);
+        }
+        return {
+          success: true,
+          data: { info: {}, common: {}, chars: [], kernings: [], pages: [], distanceField: {} },
+          atlases: [],
+        };
+      },
+    );
+
+    const gen = new UniversalMSDFGenerator();
+    const result = await gen.generate('MultiStream', {
+      outputDir: './out',
+      streamAtlases: true,
+      verbose: false,
+    });
+    await gen.dispose();
+
+    expect(result.success).toBe(true);
+    if (result.success && !result.cached) {
+      // Both atlas pages should be in savedFiles
+      const pngs = result.savedFiles?.filter((f) => f.endsWith('.png')) ?? [];
+      expect(pngs.length).toBe(2);
+    }
   });
 });
