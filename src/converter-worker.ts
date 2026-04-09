@@ -2,25 +2,19 @@
  * converter-worker.ts
  * Worker thread for MSDF generation. Runs one persistent Msdfgen WASM instance
  * and processes conversion jobs via message passing.
- *
- * Running inside a worker thread allows `worker.terminate()` to actually kill
- * the WASM computation when a timeout fires — unlike the promise-only approach.
- *
- * Message protocol:
- *   MAIN → WORKER  { type: 'convert', fontBuffer: Uint8Array, fontName: string, options: ConvertJobOptions }
- *   WORKER → MAIN  { type: 'atlas',  filename: string, texture: Uint8Array, index: number, total: number }
- *   WORKER → MAIN  { type: 'result', layout: MSDFLayout }
- *   WORKER → MAIN  { type: 'error',  message: string }
- *   WORKER → MAIN  { type: 'ready' }  (after WASM initialisation)
  */
 
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import { parentPort } from 'node:worker_threads';
-import type { FontMetrics, PackedGlyphsBin } from 'msdfgen-wasm';
+import type { FontMetrics } from 'msdfgen-wasm';
 import { Msdfgen } from 'msdfgen-wasm';
+import { appendUnicodeGlyphs, loadGlyphsByIds } from './glyph-loader.js';
+import { buildLayout, packBins } from './layout-utils.js';
+import { analyzeCharset } from './script-detector.js';
+import { getRequiredGlyphIds, SCRIPT_DEFAULT_LANGUAGE, type ShapingOptions } from './shaper.js';
 import type { MSDFLayout } from './types.js';
-import { resolveCharset } from './utils.js';
+import { generateAtlasName, resolveCharset } from './utils.js';
 
 // ============================================================================
 // Types shared between main thread and worker
@@ -34,6 +28,11 @@ export interface ConvertJobOptions {
   edgeColoring?: 'simple' | 'inktrap' | 'distance';
   padding?: number;
   fixOverlaps?: boolean;
+  complexShaping?: boolean;
+  shapingText?: string;
+  script?: string;
+  direction?: 'ltr' | 'rtl';
+  language?: string;
 }
 
 export interface WorkerAtlasMessage {
@@ -47,6 +46,9 @@ export interface WorkerAtlasMessage {
 export interface WorkerResultMessage {
   type: 'result';
   layout: MSDFLayout;
+  shapingEngine?: 'harfbuzz' | 'none';
+  glyphIdMap?: Record<number, number>;
+  shapedText?: string;
 }
 
 export interface WorkerErrorMessage {
@@ -64,36 +66,28 @@ export type WorkerOutMessage =
   | WorkerErrorMessage
   | WorkerReadyMessage;
 
-// ============================================================================
-// Atlas filename helper (mirrors converter.ts generateAtlasName)
-// ============================================================================
-
-function generateAtlasName(fontName: string, index: number, count: number): string {
-  return count > 1 ? `${fontName}-${index}.png` : `${fontName}.png`;
-}
+// ── Core conversion logic ──
 
 // ============================================================================
-// Core conversion logic — exported for direct testing
+// Core conversion logic
 // ============================================================================
 
-/**
- * Runs the full MSDF pipeline for a single font.
- * Emits each atlas image via `onAtlas` as soon as it is rendered, allowing
- * the caller to write it to disk and release the buffer before the next atlas
- * is created.  This keeps peak memory at O(1 atlas) rather than O(N atlases).
- */
-export function runConversion(
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: intentional — full shaping+packing pipeline in one pass
+export async function runConversion(
   gen: Msdfgen,
   fontBuffer: Uint8Array,
   fontName: string,
   options: ConvertJobOptions,
   onAtlas: (filename: string, texture: Uint8Array, index: number, total: number) => void,
-): MSDFLayout {
+): Promise<{
+  layout: MSDFLayout;
+  shapingEngine: 'harfbuzz' | 'none';
+  glyphIdMap?: Record<number, number>;
+  shapedText?: string;
+}> {
   const charset = options.charset;
   const fontSize = options.fontSize ?? 48;
   const fieldRange = options.fieldRange ?? 4;
-  const edgeColoring = options.edgeColoring ?? 'simple';
-  const padding = options.padding ?? 2;
   const fixOverlaps = options.fixOverlaps ?? true;
 
   gen.loadFont(fontBuffer);
@@ -101,135 +95,111 @@ export function runConversion(
   const charString = resolveCharset(
     charset as string | (string | number)[] | Set<string | number> | undefined,
   );
-  const codepoints = Array.from(new Set(charString), (c) => c.codePointAt(0)).filter(
-    (cp): cp is number => cp !== undefined,
-  );
 
-  if (codepoints.length > 0) {
-    gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });
+  let glyphIdMap: Record<number, number> | undefined;
+  let glyphIdToAdvance: Map<number, number> | undefined;
+  let shapingEngine: 'harfbuzz' | 'none' = 'none';
+  let shapedText: string | undefined;
+  let shapingUpem = 1000;
+
+  // 1. Character Retrieval & Shaping
+  if (options.complexShaping) {
+    const shapingInput = options.shapingText ?? charString;
+    const analysis = analyzeCharset(shapingInput);
+    const shapingOpts: ShapingOptions = {
+      direction:
+        (options.direction as 'rtl' | 'ltr') ??
+        (analysis.hasRtl ? 'rtl' : analysis.primaryDirection),
+      script: analysis.primaryScript ?? 'Arab',
+      language:
+        options.language ?? SCRIPT_DEFAULT_LANGUAGE[analysis.primaryScript ?? 'Arab'] ?? 'en',
+    };
+
+    const shaperResult = await getRequiredGlyphIds(
+      shapingInput,
+      Buffer.from(fontBuffer),
+      shapingOpts,
+    );
+
+    const loaderResult = loadGlyphsByIds(
+      gen,
+      shaperResult.glyphIds,
+      shaperResult.glyphIdToCodepoint,
+      {
+        preprocess: fixOverlaps,
+        advances: shaperResult.glyphIdToAdvance,
+      },
+    );
+
+    glyphIdMap = Object.fromEntries(loaderResult.glyphIdToUnicode);
+    glyphIdToAdvance = shaperResult.glyphIdToAdvance;
+    shapingEngine = 'harfbuzz';
+    shapingUpem = shaperResult.upem;
+    shapedText = shaperResult.shapedGlyphIds
+      .map((id) => {
+        const unicode = loaderResult.glyphIdToUnicode.get(id);
+        return unicode ? String.fromCodePoint(unicode) : '';
+      })
+      .join('');
+
+    // Load any non-shaping text (mixed scripts)
+    if (options.shapingText && options.shapingText !== charString) {
+      const shapingCps = new Set(
+        Array.from(shapingInput, (c) => c.codePointAt(0)).filter(
+          (cp): cp is number => cp !== undefined,
+        ),
+      );
+      const remainingCps = Array.from(new Set(charString), (c) => c.codePointAt(0)).filter(
+        (cp): cp is number => cp !== undefined && !shapingCps.has(cp),
+      );
+      if (remainingCps.length > 0) {
+        appendUnicodeGlyphs(gen, remainingCps, { preprocess: fixOverlaps });
+      }
+    }
+  } else {
+    const codepoints = Array.from(new Set(charString), (c) => c.codePointAt(0)).filter(
+      (cp): cp is number => cp !== undefined,
+    );
+    if (codepoints.length > 0) {
+      gen.loadGlyphs(codepoints, { preprocess: fixOverlaps });
+    }
   }
 
-  const [maxW, maxH] = options.textureSize ?? [2048, 2048];
-
-  const bins: PackedGlyphsBin[] =
-    codepoints.length > 0
-      ? gen.packGlyphs(
-          { size: fontSize, range: fieldRange, edgeColoring },
-          {
-            maxWidth: maxW,
-            maxHeight: maxH,
-            padding,
-            pot: true,
-            smart: true,
-            allowRotation: false,
-          },
-        )
-      : [];
-
+  // 2. Packing
+  const bins = packBins(gen, options);
   const atlasFilenames: string[] = bins.map((_, i) => generateAtlasName(fontName, i, bins.length));
 
-  // Render one atlas at a time — emit immediately so memory can be reclaimed
+  // 3. Rendering Atlases (Incremental for low memory)
   for (let i = 0; i < bins.length; i++) {
     const texture = gen.createAtlasImage(bins[i]);
     onAtlas(atlasFilenames[i], texture, i, bins.length);
   }
 
+  // 4. Build Layout Data
   const metrics: FontMetrics = gen.metrics;
-  return buildLayout(fontName, bins, metrics, atlasFilenames, fontSize, fieldRange);
-}
+  const layout = buildLayout(fontName, bins, metrics, atlasFilenames, fontSize, fieldRange);
 
-// ============================================================================
-// Layout builder (mirrors converter.ts buildLayout)
-// ============================================================================
-
-function buildLayout(
-  fontName: string,
-  bins: PackedGlyphsBin[],
-  metrics: FontMetrics,
-  atlasFilenames: string[],
-  fontSize: number,
-  fieldRange: number,
-): MSDFLayout {
-  const round = (x: number) => Math.round(x * 100 * fontSize) / 100;
-
-  const chars: MSDFLayout['chars'] = [];
-  const kernings: MSDFLayout['kernings'] = [];
-
-  for (let pageIdx = 0; pageIdx < bins.length; pageIdx++) {
-    const bin = bins[pageIdx];
-    for (const rect of bin.rects) {
-      const glyph = rect.glyph;
-      const range = rect.msdfData.range;
-      const hasSize = rect.width > 0 && rect.height > 0;
-
-      chars.push({
-        id: glyph.unicode,
-        index: glyph.index,
-        char: String.fromCodePoint(glyph.unicode),
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-        xoffset: hasSize ? round(glyph.left - range / 2) : 0,
-        yoffset: hasSize ? round(metrics.ascenderY - (glyph.top + range / 2)) : 0,
-        xadvance: round(glyph.advance),
-        page: pageIdx,
-        chnl: 15,
-      });
-
-      for (const [otherGlyph, amount] of glyph.kerning) {
-        kernings.push({ first: glyph.unicode, second: otherGlyph.unicode, amount: round(amount) });
+  // 5. Precision Layout Correction (Final override for seamless merging)
+  if (glyphIdToAdvance && glyphIdMap) {
+    for (const char of layout.chars) {
+      const glyphIdStr = Object.entries(glyphIdMap).find(([_gid, u]) => u === char.id)?.[0];
+      if (glyphIdStr !== undefined) {
+        const adv = glyphIdToAdvance.get(Number.parseInt(glyphIdStr, 10));
+        if (adv !== undefined) {
+          const scale = fontSize / shapingUpem;
+          char.xadvance = adv * scale;
+        }
       }
     }
   }
 
-  const atlasW = bins.length > 0 ? bins[0].width : 0;
-  const atlasH = bins.length > 0 ? bins[0].height : 0;
-
-  return {
-    pages: atlasFilenames,
-    chars,
-    info: {
-      face: fontName,
-      size: fontSize,
-      bold: 0,
-      italic: 0,
-      charset: chars.map((c) => c.char),
-      unicode: 1,
-      stretchH: 100,
-      smooth: 1,
-      aa: 1,
-      padding: [0, 0, 0, 0],
-      spacing: [0, 0],
-      outline: 0,
-    },
-    common: {
-      lineHeight: round(metrics.lineHeight),
-      base: round(metrics.ascenderY),
-      scaleW: atlasW,
-      scaleH: atlasH,
-      pages: atlasFilenames.length,
-      packed: 0,
-      alphaChnl: 0,
-      redChnl: 0,
-      greenChnl: 0,
-      blueChnl: 0,
-    },
-    distanceField: {
-      fieldType: 'msdf',
-      distanceRange: fieldRange,
-      type: 'msdf',
-      range: fieldRange,
-    },
-    kernings,
-  };
+  return { layout, shapingEngine, glyphIdMap, shapedText };
 }
 
 // ============================================================================
 // Worker thread entry point
 // ============================================================================
 
-/* v8 ignore start */
 async function startWorker(): Promise<void> {
   if (!parentPort) return;
 
@@ -243,7 +213,7 @@ async function startWorker(): Promise<void> {
 
   parentPort.on(
     'message',
-    (msg: {
+    async (msg: {
       type: 'convert';
       fontBuffer: Uint8Array;
       fontName: string;
@@ -251,7 +221,7 @@ async function startWorker(): Promise<void> {
     }) => {
       if (msg.type !== 'convert') return;
       try {
-        const layout = runConversion(
+        const { layout, shapingEngine, glyphIdMap, shapedText } = await runConversion(
           gen,
           msg.fontBuffer,
           msg.fontName,
@@ -263,7 +233,13 @@ async function startWorker(): Promise<void> {
             );
           },
         );
-        parentPort?.postMessage({ type: 'result', layout } satisfies WorkerResultMessage);
+        parentPort?.postMessage({
+          type: 'result',
+          layout,
+          shapingEngine,
+          glyphIdMap,
+          shapedText,
+        } satisfies WorkerResultMessage);
       } catch (e) {
         parentPort?.postMessage({
           type: 'error',
@@ -277,4 +253,3 @@ async function startWorker(): Promise<void> {
 startWorker().catch((e) => {
   parentPort?.postMessage({ type: 'error', message: String(e) } satisfies WorkerErrorMessage);
 });
-/* v8 ignore stop */

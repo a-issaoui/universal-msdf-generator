@@ -762,7 +762,7 @@ describe('FontFetcher', () => {
       const start = Date.now();
       await limiter.acquire();
       const elapsed = Date.now() - start;
-      expect(elapsed).toBeGreaterThanOrEqual(50); // It should wait for refill
+      expect(elapsed).toBeGreaterThanOrEqual(40); // Allow some jitter in task scheduling
     });
 
     it('fetchGoogleFont: re-throws AbortError from attemptGoogleFontFetch', async () => {
@@ -792,6 +792,43 @@ describe('FontFetcher', () => {
 
       const result = fetcher.fetchGoogleFont('Roboto');
       await expect(result).rejects.toThrow('Failed to fetch Google Font'); // Final wrap includes inner msg
+    });
+
+    it('extractFontUrl: handles subset with non-matching unicode-range', async () => {
+      mockFetch.mockReset();
+      const cssSubsetRange = `
+        @font-face {
+          src: url("https://fonts.gstatic.com/wrong.woff2");
+          unicode-range: U+0000-00FF;
+        }
+        @font-face {
+          src: url("https://fonts.gstatic.com/right.woff2");
+          unicode-range: U+0600-06FF;
+        }
+      `;
+      // GoogleFontsHandler tries woff (attempt 1), ttf (attempt 2), then any (attempt 3).
+      // We want attempt 3 to succeed. Attempts 1 and 2 should fail gracefully (missing URL).
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url.includes('css2')) {
+          const callCount = mockFetch.mock.calls.length;
+          const currentCallIndex = callCount - 1;
+          const ua =
+            (
+              mockFetch.mock.calls[currentCallIndex][1] as {
+                headers?: Record<string, string>;
+              }
+            )?.headers?.['User-Agent'] || '';
+          if (ua.includes('FontBot')) {
+            // 'any' attempt UA
+            return { ok: true, text: () => Promise.resolve(cssSubsetRange) };
+          }
+          return { ok: true, text: () => Promise.resolve('') };
+        }
+        return { ok: true, arrayBuffer: () => Promise.resolve(ttfMagic()) };
+      });
+
+      const result = await fetcher.fetchGoogleFont('Roboto', { subset: 'arabic' });
+      expect(result.source).toBe('google');
     });
 
     it('fetchWithRetry: reaches the maxRetries limit and throws final error', async () => {

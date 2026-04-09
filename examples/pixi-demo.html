@@ -369,7 +369,7 @@
             min-height: 14px;
         }
 
-        #text-input {
+        #font-picker input[type="text"] {
             width: 100%;
             padding: 7px 12px;
             border-radius: 12px;
@@ -380,11 +380,10 @@
             color: #000;
             outline: none;
             font-family: inherit;
-            resize: none;
             box-sizing: border-box;
         }
 
-        #text-input:focus {
+        #font-picker input[type="text"]:focus {
             border-color: #000;
             background: #fff;
         }
@@ -445,7 +444,6 @@
             to { transform: rotate(360deg); }
         }
     </style>
-    <base target="_blank">
 </head>
 <body>
 
@@ -493,17 +491,18 @@
         <button id="font-load-btn" type="button">Load</button>
     </div>
     <div id="font-presets">
-        <button type="button" class="preset-btn active" data-font="Orbitron">Orbitron</button>
-        <button type="button" class="preset-btn" data-font="Roboto">Roboto</button>
-        <button type="button" class="preset-btn" data-font="Inter">Inter</button>
-        <button type="button" class="preset-btn" data-font="Playfair Display">Playfair</button>
-        <button type="button" class="preset-btn" data-font="Oswald">Oswald</button>
         <button type="button" class="preset-btn" data-font="Pacifico">Pacifico</button>
+        <button type="button" class="preset-btn" data-font="Noto Sans Arabic">Arabic</button>
+        <button type="button" class="preset-btn" data-font="Heebo">Hebrew</button>
     </div>
     <div id="font-status"></div>
-    <label for="text-input" style="margin-top:4px;">Preview Text</label>
-    <textarea id="text-input" rows="2" spellcheck="false">SQUID
-GAME</textarea>
+    <label style="margin-top:4px;">Preview Text</label>
+    <label style="font-size:.6rem;color:#aaa;margin-top:2px;">Latin (LTR)</label>
+    <input  id="text-ltr"    type="text"  value="Hello World" spellcheck="false" autocomplete="off" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.15);font-size:.8rem;"/>
+    <label style="font-size:.6rem;color:#aaa;margin-top:4px;">Arabic (RTL)</label>
+    <input  id="text-arabic" type="text"  value="مرحبا" dir="rtl" spellcheck="false" autocomplete="off" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.15);font-size:.8rem;"/>
+    <label style="font-size:.6rem;color:#aaa;margin-top:4px;">Hebrew (RTL)</label>
+    <input  id="text-hebrew" type="text"  value="שלום" dir="rtl" spellcheck="false" autocomplete="off" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid rgba(0,0,0,.15);font-size:.8rem;"/>
 </div>
 
 <div id="renderer-badge">— WebGL 2 —</div>
@@ -854,6 +853,7 @@ GAME</textarea>
             resolution:      Math.max(window.devicePixelRatio, 3),
             autoDensity:     true,
             preference:      'webgl',
+            roundPixels:     true,  // Renderer-level: snaps all draw calls to integer pixels
         });
 
         document.body.appendChild(app.canvas);
@@ -863,8 +863,12 @@ GAME</textarea>
         // ═══════════════════════════════════════════════════════════════════════
 
         const badge = document.getElementById('renderer-badge');
-        rendererLabel = app.renderer.type === 1 ? 'WebGL 2' :
-            app.renderer.type === 2 ? 'WebGPU' : 'Canvas';
+        // PixiJS v8 uses string type ('webgl'/'webgpu'); v7 used numbers (1/2).
+        // Support both to stay compatible across versions.
+        const rtype = app.renderer.type;
+        rendererLabel = (rtype === 'webgpu' || rtype === 2) ? 'WebGPU'
+            : (rtype === 'webgl'  || rtype === 1) ? 'WebGL 2'
+            : 'Canvas';
 
         try {
             const gl = app.renderer.gl;
@@ -892,12 +896,10 @@ GAME</textarea>
 
         /**
          * Scene Container Configuration
-         * roundPixels: true - CRITICAL for crisp text
-         *   Rounds x/y coordinates to nearest integer before rendering.
-         *   Prevents subpixel positioning which causes blurriness.
+         * roundPixels is a renderer-level option in v8 (set in app.init above).
+         * Container does not have this property — it lives on AbstractRenderer.
          */
         sceneContainer = new PIXI.Container();
-        sceneContainer.roundPixels = true;
         app.stage.addChild(sceneContainer);
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -955,11 +957,9 @@ GAME</textarea>
      * in RGB channels. This allows high-quality scaling without pixelation.
      *
      * PERFECT CRISP TEXT CHECKLIST:
-     * ✓ scaleMode: 'nearest' - No interpolation (pixel-perfect)
-     * ✓ roundPixels: true - Snaps to pixel grid
-     * ✓ autoGenerateMipmaps: false - Prevents blur from mipmapping
-     * ✓ mipmapMode: 'none' - Explicitly disable mipmaps
-     * ✓ anisotropicLevel: 16 - Max quality (though less relevant with nearest)
+     * ✓ scaleMode: 'linear' - Auto-set by PixiJS v8 for MSDF fonts (detects distanceField in .fnt)
+     * ✓ roundPixels: true - Set on renderer (app.init) and BitmapText; snaps to pixel grid
+     * ✓ autoGenerateMipmaps: false - Auto-set by PixiJS v8 for MSDF fonts
      * ✓ High resolution rendering (3x DPI)
      */
     async function loadProgrammaticFont(fontName) {
@@ -970,8 +970,32 @@ GAME</textarea>
             statusEl.innerText = `GENERATING MSDF: ${fontName}…`;
             statusEl.style.color = '#22d3ee';
 
-            // Request font generation from server
-            const response = await fetch(`/api/generate?font=${encodeURIComponent(fontName)}`);
+            // Three separate scripts, each rendered in its own BitmapText row.
+            //
+            // Arabic MUST go through HarfBuzz shaping → connected contextual forms.
+            // Hebrew uses raw Unicode → Hebrew has no joining complexity for basic text.
+            // Latin uses raw Unicode → never enters the shaping pipeline.
+            //
+            // Critically: Arabic and Hebrew must NOT be shaped in the same HarfBuzz run.
+            // HarfBuzz BiDi would treat them as one RTL paragraph and scramble ordering.
+            const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+            const hasArabic = ARABIC_RE.test(arabicPreview);
+
+            // charset: ALL unique chars across all three scripts → one shared atlas.
+            const charset = [ltrPreview, arabicPreview, hebrewPreview]
+                .filter(Boolean).join('\n');
+
+            // Request font generation from server.
+            // text = Arabic only → HarfBuzz shapes Arabic script in isolation.
+            // Hebrew is included in the charset (so its glyphs are in the atlas)
+            // but rendered as raw Unicode without HarfBuzz shaping.
+            const url = new URL('/api/generate', window.location.origin);
+            url.searchParams.set('font', fontName);
+            url.searchParams.set('charset', charset);
+            url.searchParams.set('text', arabicPreview || '');
+            url.searchParams.set('complexShaping', hasArabic.toString());
+
+            const response = await fetch(url.toString());
             const result = await response.json();
 
             if (!response.ok || !result.success) {
@@ -979,141 +1003,172 @@ GAME</textarea>
             }
 
             console.log('✅ Generation complete:', result.fontName);
+            console.group('📊 Server response metadata');
+            console.log('shapingEngine :', result.metadata?.shapingEngine ?? 'none');
+            console.log('shapedText    :', JSON.stringify(result.metadata?.shapedText ?? '(none)'));
+            if (result.metadata?.shapedText) {
+                const codes = [...result.metadata.shapedText].map(c => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}`);
+                console.log('shapedText codepoints:', codes.join(' '));
+            }
+            console.log('glyphIdMap keys:', result.metadata?.glyphIdMap ? Object.keys(result.metadata.glyphIdMap).length : 0);
+            console.log('charset size  :', result.metadata?.charset);
+            console.groupEnd();
             statusEl.innerText = `LOADING: ${result.fontName}…`;
 
             const identity = result.fontName;
-            const fntUrl = `/examples/assets/fonts/${identity}.fnt`;
+            const fntUrl   = `/examples/assets/fonts/${identity}.fnt`;
 
-            /**
-             * AUTOMATIC ASSET RESOLUTION
-             * 
-             * We load the .fnt metadata file directly. PixiJS will automatically
-             * parse this file, find the required texture pages (e.g. -0.png, -1.png),
-             * and download them for us.
-             * 
-             * We use a cache-buster on the URL to ensure that if we regenerate the 
-             * same font with new settings, the browser sees the fresh version.
-             */
-            const font = await PIXI.Assets.load({
-                src: `${fntUrl}?v=${Date.now()}`,
-                alias: identity,
-                data: {
-                    // Set global defaults for textures discovered during loading
-                    autoGenerateMipmaps: false,
-                    scaleMode: 'nearest',
-                    anisotropicLevel: 16
-                }
-            });
+            // Arabic gets HarfBuzz PUA-mapped shaped text for correct contextual forms.
+            // When complexShaping is true, Arabic glyphs are at PUA positions in the atlas.
+            // MUST use shapedText (PUA) to render them — raw Unicode Arabic won't be found.
+            // If shapedText is empty (shaping failed), hide the Arabic row rather than showing blanks.
+            const arabicRenderText = hasArabic
+                ? (result.metadata?.shapedText || '')
+                : arabicPreview;
 
-            /**
-             * POST-LOAD TEXTURE TUNING
-             * 
-             * For absolute precision, we iterate over every texture page loaded 
-             * for this font and ensure mipmaps are disabled and filtering is set to nearest.
-             */
-            if (font.textures) {
-                Object.values(font.textures).forEach(tex => {
-                    const s = tex.baseTexture || tex.source; // Handle v7/v8 delta
-                    if (s) {
-                        s.autoGenerateMipmaps = false;
-                        s.mipmapMode = 'none';
-                        s.scaleMode = 'nearest';
-                        s.anisotropicLevel = 16;
-                        if (typeof s.update === 'function') s.update();
-                    }
-                });
+            console.group('🖊️ Render strings');
+            console.log('ltrPreview    :', JSON.stringify(ltrPreview));
+            console.log('arabicPreview :', JSON.stringify(arabicPreview));
+            console.log('hebrewPreview :', JSON.stringify(hebrewPreview));
+            console.log('arabicRenderText:', JSON.stringify(arabicRenderText));
+            if (arabicRenderText) {
+                const codes = [...arabicRenderText].map(c => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}`);
+                console.log('arabicRenderText codepoints:', codes.join(' '));
+            }
+            console.groupEnd();
+
+            // CRITICAL ORDER: remove old scene object BEFORE touching any fonts.
+            // The ticker renders every frame during async awaits. If the old textObject
+            // stays in the scene during Assets.unload(), PixiJS calls updateStyle() on
+            // a destroyed TextureSource (style=null) → applyStyleParams.ts:43 crash.
+            const prevIdentity = loadedFontIdentity;
+            if (textObject) {
+                sceneContainer.removeChild(textObject);
+                textObject = null;
             }
 
-            statusEl.innerText = `VERSION ACTIVE: ${identity}`;
-            if (textObject) sceneContainer.removeChild(textObject);
+            // Load new font (old font stays alive during download — safe to render).
+            // PixiJS v8 auto-detects <distanceField fieldType="msdf"> and applies
+            // scaleMode:'linear' + autoGenerateMipmaps:false automatically.
+            console.log(`📥 Loading BitmapFont from: ${fntUrl}`);
+            await PIXI.Assets.load({ src: `${fntUrl}?v=${Date.now()}`, alias: identity });
+            loadedFontIdentity = identity;
 
-            // ═══════════════════════════════════════════════════════════════════
-            // TEXT COMPOSITION - PERFECT CRISP CONFIGURATION
-            // ═══════════════════════════════════════════════════════════════════
-
-            /**
-             * Container Setup
-             * roundPixels: true ensures the entire text block snaps to pixel grid
-             */
-            const group = new PIXI.Container();
-            group.roundPixels = true;
-
-            /**
-             * BitmapText Configuration
-             *
-             * fontFamily: Must match the loaded font alias
-             * fontSize: 256 - Matches the MSDF generation size in serve.js
-             *              This is the "native" resolution of the SDF texture.
-             *              Rendering at this size = 1:1 pixel mapping = maximum crispness.
-             *
-             * align: 'center' - Horizontal centering within text bounds
-             * fill: 0xffffff - Pure white (no tinting, cleanest look)
-             */
-            const main = new PIXI.BitmapText({
-                text: previewText,
-                style: {
-                    fontFamily: identity,
-                    fontSize: 256,              // ← Matches MSDF generation size
-                    align: 'center',
-                    fill: 0x000000              // ← Black text on white
+            // Debug: inspect what glyphs were loaded into the BitmapFont
+            try {
+                const loadedFont = PIXI.BitmapFont.get(identity);
+                if (loadedFont) {
+                    const charIds = Object.keys(loadedFont.chars || {}).map(Number).sort((a,b)=>a-b);
+                    const puaIds = charIds.filter(id => id >= 0xE000 && id <= 0xF8FF);
+                    const arabicIds = charIds.filter(id => id >= 0x0600 && id <= 0x06FF);
+                    const latinIds = charIds.filter(id => id >= 0x20 && id <= 0x7F);
+                    const hebrewIds = charIds.filter(id => id >= 0x05D0 && id <= 0x05EA);
+                    console.group(`🔤 BitmapFont "${identity}" — ${charIds.length} glyphs total`);
+                    console.log('Latin  glyphs (U+0020–007F):', latinIds.length, latinIds.slice(0,10).map(id => String.fromCodePoint(id)).join(''));
+                    console.log('Arabic glyphs (U+0600–06FF):', arabicIds.length, arabicIds.slice(0,10).map(id => `U+${id.toString(16).toUpperCase()}`).join(' '));
+                    console.log('Hebrew glyphs (U+05D0–05EA):', hebrewIds.length, hebrewIds.map(id => String.fromCodePoint(id)).join(''));
+                    console.log('PUA    glyphs (U+E000–F8FF):', puaIds.length, puaIds.slice(0,10).map(id => `U+${id.toString(16).toUpperCase()}`).join(' '));
+                    console.groupEnd();
+                } else {
+                    console.warn('⚠️ BitmapFont.get() returned null for identity:', identity);
                 }
+            } catch (e) {
+                console.warn('⚠️ Could not inspect BitmapFont:', e);
+            }
+
+            // Defer unload by one animation frame so PixiJS finishes any in-flight
+            // sampler updates before destroy() sets source.style = null.
+            if (prevIdentity && prevIdentity !== identity) {
+                requestAnimationFrame(() => PIXI.Assets.unload(prevIdentity).catch(() => {}));
+            }
+
+            statusEl.innerText = `ACTIVE: ${identity}`;
+
+            // ═══════════════════════════════════════════════════════════════════
+            // THREE-ROW TEXT COMPOSITION
+            //   Row 1 (top)    — Latin LTR   — raw Unicode
+            //   Row 2 (middle) — Arabic RTL  — HarfBuzz PUA-shaped
+            //   Row 3 (bottom) — Hebrew RTL  — raw Unicode
+            // Each row is hidden if the font has no glyphs for that script.
+            // ═══════════════════════════════════════════════════════════════════
+
+            const group = new PIXI.Container();
+            const GAP = 80;   // vertical gap between rows (at native 256px scale)
+            const FS  = 256;  // fontSize = MSDF generation size → 1:1 texel mapping
+
+            const mkStyle = () => ({ fontFamily: identity, fontSize: FS, align: 'center', fill: 0x000000 });
+
+            // Row 1 — Latin (LTR)
+            const ltrBt = new PIXI.BitmapText({ text: ltrPreview || ' ', roundPixels: true, style: mkStyle() });
+            ltrBt.anchor.set(0.5, 0.5);
+            ltrBt.visible = !!ltrPreview;
+
+            // Row 2 — Arabic (RTL, PUA-shaped via HarfBuzz)
+            // arabicRenderText contains PUA codepoints when complexShaping was used.
+            // If it's empty (shaping failed), hide the row — raw Arabic won't be in atlas.
+            if (hasArabic && !arabicRenderText) {
+                console.warn('⚠️ Arabic shaping returned empty shapedText — Arabic row hidden. Check server logs.');
+            }
+            const arabicBt = new PIXI.BitmapText({ text: arabicRenderText || ' ', roundPixels: true, style: mkStyle() });
+            arabicBt.anchor.set(0.5, 0.5);
+            arabicBt.visible = !!(arabicPreview && arabicRenderText);
+
+            // Row 3 — Hebrew (RTL, raw Unicode reversed for visual correctness)
+            // BitmapText places characters L→R. Hebrew logical order reversed = correct visual R→L.
+            // Example: "שלום" reversed → "מולש", which rendered L→R reads correctly R→L.
+            const hebrewRenderText = [...hebrewPreview].reverse().join('');
+            console.log('🔤 hebrewRenderText:', JSON.stringify(hebrewRenderText),
+                'codepoints:', [...hebrewRenderText].map(c => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}`).join(' '));
+            const hebrewBt = new PIXI.BitmapText({ text: hebrewRenderText || ' ', roundPixels: true, style: mkStyle() });
+            hebrewBt.anchor.set(0.5, 0.5);
+            hebrewBt.visible = !!hebrewPreview;
+
+            // Stack visible rows vertically, centred around y=0.
+            // We can't know heights until after first render, so use a fixed step.
+            const STEP = FS + GAP;  // approx row height + gap
+            const rows = [ltrBt, arabicBt, hebrewBt].filter(r => r.visible);
+            const totalH = rows.length * STEP - GAP;
+            rows.forEach((bt, i) => {
+                bt.y = -totalH / 2 + i * STEP;
             });
 
-            /**
-             * Anchor point (0.5, 0.5) = center of text
-             * This makes positioning and scaling occur from the center,
-             * which is more intuitive for zoom operations.
-             */
-            main.anchor.set(0.5);
-
-            group.addChild(main);
-
-            /**
-             * WHY NO GAMMA CORRECTION FILTER?
-             *
-             * The previous implementation had a gamma correction shader:
-             *   c.a = pow(c.a, 0.4545)
-             *
-             * This was removed because:
-             * 1. MSDF textures are generated with correct gamma already
-             * 2. The pow() operation slightly softens edges
-             * 3. For absolute sharpness, we want raw nearest-neighbor sampling
-             *
-             * If text looks too "thin" or "thick", adjust the MSDF generation
-             * parameters (fieldRange) rather than using gamma correction.
-             */
+            group.addChild(ltrBt);
+            group.addChild(arabicBt);
+            group.addChild(hebrewBt);
 
             sceneContainer.addChild(group);
             textObject = group;
-            // Expose current text node for live preview text updates
-            textObject._mainText = main;
+            textObject._ltrBt    = ltrBt;
+            textObject._arabicBt = arabicBt;
+            textObject._hebrewBt = hebrewBt;
 
         } catch (err) {
             console.error('💥 Font loading failed:', err);
-            statusEl.innerText = `ERROR: ${err.message}`;
+            statusEl.innerText = `ERROR: ${err.message ?? String(err)}`;
             statusEl.style.color = '#ef4444';
-
-            // Retry with same font after 3 seconds
-            setTimeout(() => {
-                statusEl.innerText = 'RETRYING…';
-                statusEl.style.color = '#22d3ee';
-                loadProgrammaticFont(fontName);
-            }, 3000);
+            throw err;
         }
     }
+
+    /** Tracks the identity of the currently loaded BitmapFont for cleanup. */
+    let loadedFontIdentity = null;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // FONT PICKER WIRING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    const fontInput   = document.getElementById('font-input');
-    const fontLoadBtn = document.getElementById('font-load-btn');
-    const fontStatus  = document.getElementById('font-status');
-    const presetBtns  = document.querySelectorAll('.preset-btn');
-    const textInput   = document.getElementById('text-input');
+    const fontInput    = document.getElementById('font-input');
+    const fontLoadBtn  = document.getElementById('font-load-btn');
+    const fontStatus   = document.getElementById('font-status');
+    const presetBtns   = document.querySelectorAll('.preset-btn');
+    const inputLtr     = document.getElementById('text-ltr');
+    const inputArabic  = document.getElementById('text-arabic');
+    const inputHebrew  = document.getElementById('text-hebrew');
 
-    /** Current preview text (shared between font switches) */
-    let previewText = 'SQUID\nGAME';
+    // Three independent preview strings — one per script.
+    let ltrPreview    = 'Hello World';
+    let arabicPreview = 'مرحبا';
+    let hebrewPreview = 'שלום';
 
     async function switchFont(name) {
         const trimmed = name.trim();
@@ -1139,7 +1194,9 @@ GAME</textarea>
             document.getElementById('current-font').textContent = trimmed.toUpperCase();
         } catch (err) {
             fontStatus.style.color = '#ef4444';
-            fontStatus.textContent = `✗ ${err.message}`;
+            fontStatus.textContent = `✗ ${err?.message ?? String(err)}`;
+            // Revert preset active state on failure
+            for (const b of presetBtns) b.classList.remove('active');
         } finally {
             fontLoadBtn.disabled = false;
             document.getElementById('loading').style.opacity = '0';
@@ -1160,23 +1217,49 @@ GAME</textarea>
         });
     });
 
-    // Live preview text — updates immediately without reloading the font
-    textInput.addEventListener('input', () => {
-        previewText = textInput.value || ' ';
-        if (textObject?._mainText) {
-            textObject._mainText.text = previewText;
-            textObject._mainText.anchor.set(0.5);
+    // Live preview — each input updates its row immediately (no font reload needed).
+    inputLtr.addEventListener('input', () => {
+        ltrPreview = inputLtr.value;
+        if (textObject?._ltrBt) {
+            textObject._ltrBt.text    = ltrPreview || ' ';
+            textObject._ltrBt.visible = !!ltrPreview;
         }
     });
 
-    // Prevent textarea newline from triggering keyboard shortcuts
-    textInput.addEventListener('keydown', e => e.stopPropagation());
+    inputArabic.addEventListener('input', () => {
+        arabicPreview = inputArabic.value;
+        if (textObject?._arabicBt) {
+            // Raw Unicode preview for live typing; full PUA shaping on next font load.
+            textObject._arabicBt.text    = arabicPreview || ' ';
+            textObject._arabicBt.visible = !!arabicPreview;
+        }
+    });
 
-    // Add font-picker to the click-ignore list for drag/keyboard handlers
+    inputHebrew.addEventListener('input', () => {
+        hebrewPreview = inputHebrew.value;
+        if (textObject?._hebrewBt) {
+            const reversed = [...hebrewPreview].reverse().join('');
+            textObject._hebrewBt.text    = reversed || ' ';
+            textObject._hebrewBt.visible = !!hebrewPreview;
+        }
+    });
+
+    // Prevent inputs from triggering canvas keyboard shortcuts
+    [inputLtr, inputArabic, inputHebrew].forEach(el =>
+        el.addEventListener('keydown', e => e.stopPropagation()));
+
+    // Prevent font-picker panel clicks from starting canvas drag
     document.getElementById('font-picker').addEventListener('mousedown', e => e.stopPropagation());
 
     // Start the application
-    init();
+    init().catch(err => {
+        console.error('💥 Initialization failed:', err);
+        const statusEl = document.getElementById('loading-status');
+        if (statusEl) {
+            statusEl.textContent = `FATAL: ${err?.message ?? String(err)}`;
+            statusEl.style.color = '#ef4444';
+        }
+    });
 </script>
 </body>
 </html>

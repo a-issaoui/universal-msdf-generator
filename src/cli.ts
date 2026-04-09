@@ -50,7 +50,12 @@ function showHelp() {
   Options:
     --out, -o          Output directory (default: ./output)
     --charset, -c      Charset preset or custom string (default: latin)
-                       Presets: ascii, alphanumeric, latin, cyrillic
+                       Presets: ascii, alphanumeric, latin, cyrillic,
+                                arabic, persian, urdu, hebrew
+    --complex-shaping  Enable HarfBuzz text shaping for complex scripts
+    --script           ISO script tag (e.g. Arab, Hebr, Deva, Thai)
+    --direction        Text direction: ltr | rtl
+    --language         BCP 47 language tag (e.g. ar, fa, ur)
     --size, -s         Font size (default: 48)
     --range, -r        Distance field range in px (default: 4)
     --format           Output format: json | fnt | both | all (default: json)
@@ -99,6 +104,10 @@ interface CliOptions {
   force: boolean;
   verbose: boolean;
   saveFontFile: boolean;
+  complexShaping: boolean | undefined;
+  script: string | undefined;
+  direction: 'ltr' | 'rtl' | undefined;
+  language: string | undefined;
 }
 
 type OptionHandler = (args: string[], index: number, options: CliOptions) => number;
@@ -235,6 +244,25 @@ const FLAG_HANDLERS: Record<string, OptionHandler> = {
     opts.saveFontFile = true;
     return i;
   },
+  '--complex-shaping': (_, i, opts) => {
+    opts.complexShaping = true;
+    return i;
+  },
+  '--script': (args, i, opts) => {
+    opts.script = args[i + 1];
+    return i + 1;
+  },
+  '--direction': (args, i, opts) => {
+    const val = args[i + 1];
+    if (val !== 'ltr' && val !== 'rtl')
+      throw new Error(`--direction must be "ltr" or "rtl" (got "${val}")`);
+    opts.direction = val as 'ltr' | 'rtl';
+    return i + 1;
+  },
+  '--language': (args, i, opts) => {
+    opts.language = args[i + 1];
+    return i + 1;
+  },
 };
 
 export function parseArgs(args: string[]): { sources: string[]; options: CliOptions } {
@@ -256,6 +284,10 @@ export function parseArgs(args: string[]): { sources: string[]; options: CliOpti
     force: false,
     verbose: true,
     saveFontFile: false,
+    complexShaping: undefined,
+    script: undefined,
+    direction: undefined,
+    language: undefined,
   };
 
   const sources: string[] = [];

@@ -59,6 +59,7 @@ const MIME_TYPES = {
 // HTTP SERVER
 // ═════════════════════════════════════════════════════════════════════════════
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: script server
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   console.log(`[UMG Static] ${req.method} ${url.pathname}`);
@@ -69,78 +70,57 @@ const server = createServer(async (req, res) => {
     // ═════════════════════════════════════════════════════════════════════
 
     if (url.pathname === '/api/generate') {
-      /**
-       * Query parameter: font
-       * Default: 'Orbitron'
-       * Specifies the font family to generate
-       */
       const font = url.searchParams.get('font') || 'Orbitron';
-      console.log(`🎨 Dynamic Generation Request: ${font}`);
+      // `text`    — RTL-only string that gets shaped through HarfBuzz.
+      //             Must NOT include LTR text; HarfBuzz BiDi would reverse it.
+      // `charset` — full set of characters to include in the atlas (LTR + RTL).
+      //             When absent, falls back to `text`, then 'latin'.
+      const text = url.searchParams.get('text') || '';
+      const charset = url.searchParams.get('charset') || text || 'latin';
+      const complexShaping = url.searchParams.get('complexShaping') === 'true';
 
-      /**
-       * GENERATION CONFIGURATION
-       *
-       * These parameters control the quality and characteristics of the
-       * generated MSDF texture. They must match the client's expectations
-       * for optimal rendering.
-       *
-       * fontSize: 256
-       *   - The size at which glyphs are rasterized for SDF generation
-       *   - Larger = more detail but bigger texture
-       *   - Must match the fontSize used in PixiJS BitmapText
-       *
-       * textureSize: [2048, 2048]
-       *   - Size of the output texture atlas
-       *   - Must be power-of-2 for mipmapping (though we disable it)
-       *   - 2048x2048 fits ~100-200 glyphs at 256px each
-       *
-       * fieldRange: 4
-       *   - Distance in pixels from the edge to store in SDF
-       *   - Higher = better quality at small sizes, but less precision
-       *   - 4 is optimal for 256px glyphs
-       *
-       * outputFormat: 'all'
-       *   - Generates both .png (texture) and .fnt (metadata)
-       *
-       * reuseExisting: true
-       *   - Skip regeneration if files already exist
-       *   - Speeds up server restarts
-       */
-      console.log(`🛠️ Resolved Generation Options:`, {
-        font,
-        fontSize: 256,
-        textureSize: [2048, 2048],
-        fieldRange: 4,
-        outputDir: ASSETS_DIR,
-        saveFontFile: true,
-        verbose: true,
-      });
+      console.log(`🎨 Dynamic Generation Request: ${font} (Complex: ${complexShaping})`);
+      console.log(
+        `   charset (${charset.length} chars): ${JSON.stringify(charset.slice(0, 80))}${charset.length > 80 ? '…' : ''}`,
+      );
+      console.log(`   shapingText: ${JSON.stringify(text || '(none)')}`);
 
       const startTime = performance.now();
       const result = await generator.generate(font, {
         verbose: true,
-        reuseExisting: true,
+        reuseExisting: false,
         outputDir: ASSETS_DIR,
-        fontSize: 256, // ← Match client fontSize
-        textureSize: [2048, 2048], // ← Power of 2
-        fieldRange: 4, // ← Distance field range
-        outputFormat: 'all', // ← PNG + FNT
+        fontSize: 256,
+        textureSize: [2048, 2048],
+        fieldRange: 4,
+        outputFormat: 'all',
         saveFontFile: true,
+        charset,
+        complexShaping,
+        ...(text ? { shapingText: text } : {}),
       });
       const duration = performance.now() - startTime;
       console.log(`⏱️ Generation took ${duration.toFixed(2)}ms`);
 
       if (!result.success) throw new Error(result.error);
 
-      /**
-       * RESPONSE OPTIMIZATION
-       *
-       * The generator returns large Base64/Binary data buffers.
-       * We strip these from the JSON response because:
-       * 1. Client loads textures separately via PIXI.Assets.load()
-       * 2. Reduces response from ~5MB to ~500 bytes
-       * 3. Client only needs fontName to construct URLs
-       */
+      // Debug: log shaping metadata
+      if (result.metadata) {
+        console.log(`🔍 Shaping metadata:`);
+        console.log(`   shapingEngine : ${result.metadata.shapingEngine ?? 'none'}`);
+        console.log(`   shapedText    : ${JSON.stringify(result.metadata.shapedText ?? '(none)')}`);
+        if (result.metadata.shapedText) {
+          const codes = [...result.metadata.shapedText].map(
+            (c) => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`,
+          );
+          console.log(`   shapedText codepoints: ${codes.join(' ')}`);
+        }
+        console.log(
+          `   glyphIdMap keys: ${result.metadata.glyphIdMap ? Object.keys(result.metadata.glyphIdMap).length : 0}`,
+        );
+        console.log(`   charset size  : ${result.metadata.charset}`);
+      }
+
       const { data: _data, atlases: _atlases, ...clientSafeResult } = result;
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -180,7 +160,7 @@ const server = createServer(async (req, res) => {
     // Server error
     console.error('💥 Server Error:', err);
     res.writeHead(500);
-    res.end(`Internal Server Error: ${err.message}`);
+    res.end(`Internal Server Error: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 

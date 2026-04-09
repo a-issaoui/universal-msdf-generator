@@ -1,0 +1,450 @@
+>>>>> CONVERTER.TS LOADED <<<<<
+
+🚀 Universal MSDF Engine Visualizer: http://localhost:3003
+📂 Serving assets from: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+
+📖 API Endpoints:
+   GET /api/generate?font=FontName - Generate MSDF font
+   GET /examples/assets/fonts/*     - Access generated files
+[UMG Static] GET /
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+[FontFetcher] Fetching: https://fonts.googleapis.com/css2?family=Orbitron:ital,wght@0,400&display=swap
+[FontFetcher] UA: Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1
+[FontFetcher] Fetching: https://fonts.gstatic.com/s/orbitron/v35/yMJMMIlzdpvBhQQL_SC3X9yhF25-T1nyGy6xpmI0XjQ.ttf
+[FontFetcher] UA: Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 2659.87ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (14 chars): "اللغة الع ربية"
+   shapingText: "(none)"
+[FontFetcher] Fetching: https://fonts.googleapis.com/css2?family=Noto%20Sans%20Arabic:ital,wght@0,400&display=swap
+[FontFetcher] UA: Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1
+[FontFetcher] Fetching: https://fonts.gstatic.com/s/notosansarabic/v33/nwpxtLGrOAZMl5nJ_wfgRg3DrWFZWsnVBJ_sS6tlqHHFlhQ5l3sQWIHPqzCfyGyvu3CHFQM.ttf
+[FontFetcher] UA: Mozilla/5.0 (Linux; U; Android 2.2; en-us; Nexus One Build/FRF91) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2118.85ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005 U+E006 U+E007 U+E008 U+E009 U+E00A U+E007 U+E000 U+E001 U+E00B U+E008 U+E009 U+E009 U+E00A
+   glyphIdMap keys: 12
+   charset size  : 14
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (14 chars): "اللغة الع ربية"
+   shapingText: "(none)"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1321.83ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005 U+E006 U+E007 U+E008 U+E009 U+E00A U+E007 U+E000 U+E001 U+E00B U+E008 U+E009 U+E009 U+E00A
+   glyphIdMap keys: 12
+   charset size  : 14
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: false)
+   charset (27 chars): "Hello WorldArabic Test\nשלום"
+   shapingText: "(none)"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1588.07ms
+🔍 Shaping metadata:
+   shapingEngine : none
+   shapedText    : "(none)"
+   glyphIdMap keys: 0
+   charset size  : 27
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (47 chars): "Arabic Test\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2845.18ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 47
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (47 chars): "Arabic Test\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 3307.89ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 47
+[UMG Static] GET /
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 786.94ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2143.40ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (20 chars): "Arabic Test\nقطة\nשלום"
+   shapingText: "قطة"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2240.57ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E000 U+E003
+   glyphIdMap keys: 4
+   charset size  : 20
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (47 chars): "Arabic Test\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 3890.06ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 47
+[UMG Static] GET /
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 441.27ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1418.69ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (32 chars): "Arabic Precision Test\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1689.70ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 32
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (57 chars): "Arabic Precision Test\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2526.37ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 57
+[UMG Static] GET /
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 554.99ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1588.16ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (64 chars): "Arabic Precision Test um4ioc\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+[UMG Static] GET /
+[UMG Static] GET /.well-known/appspecific/com.chrome.devtools.json
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 3338.10ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 64
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 860.47ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1565.87ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (30 chars): "اللغة العربية لغة جميلة وراقية"
+   shapingText: "(none)"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2553.73ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 30
+[UMG Static] GET /
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 1058.91ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1946.82ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (57 chars): "Arabic Precision Test\nاللغة العربية لغة جميلة وراقية\nשלום"
+   shapingText: "اللغة العربية لغة جميلة وراقية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 3755.04ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E000 U+E004 U+E005 U+E006 U+E007 U+E008 U+E000 U+E001 U+E009 U+E002 U+E003 U+E00A U+E00B U+E00C U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E008 U+E000 U+E001 U+E002 U+E003 U+E00B U+E00F U+E006 U+E00E U+E009 U+E005 U+E008 U+E000 U+E001 U+E00D U+E00E U+E009 U+E009 U+E005
+   glyphIdMap keys: 16
+   charset size  : 57
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (41 chars): "Precision Verification\nجميلة العربية\nשלום"
+   shapingText: "جميلة العربية"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 3163.35ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005 U+E006 U+E007 U+E008 U+E009 U+E00A U+E000 U+E001 U+E008 U+E002 U+E003 U+E00B U+E004 U+E00C
+   glyphIdMap keys: 13
+   charset size  : 41
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (13 chars): "جميلة العربية"
+   shapingText: "(none)"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 2287.29ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005 U+E006 U+E007 U+E008 U+E009 U+E00A U+E000 U+E001 U+E008 U+E002 U+E003 U+E00B U+E004 U+E00C
+   glyphIdMap keys: 13
+   charset size  : 13
+[UMG Static] GET /
+[UMG Static] GET /.well-known/appspecific/com.chrome.devtools.json
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 850.37ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1955.17ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (5 chars): "مرحبا"
+   shapingText: "(none)"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 608.84ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 5
+[UMG Static] GET /examples/pixi-demo.html
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Orbitron (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/orbitron-400-normal-256-r4.ttf
+⏱️ Generation took 695.44ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   glyphIdMap keys: 0
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/orbitron-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (22 chars): "Hello World\nمرحبا\nשלום"
+   shapingText: "مرحبا"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1481.32ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005
+   glyphIdMap keys: 6
+   charset size  : 22
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.fnt
+[UMG Static] GET /examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.png
+[UMG Static] GET /api/generate
+🎨 Dynamic Generation Request: Noto Sans Arabic (Complex: true)
+   charset (20 chars): "مرحبا بالعالم العربي"
+   shapingText: "مرحبا بالعالم العربي"
+Saving to: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts
+Font saved: /home/anarchy/Dev/universal-msdf-generator/examples/assets/fonts/noto-sans-arabic-400-normal-256-r4.ttf
+⏱️ Generation took 1420.03ms
+🔍 Shaping metadata:
+   shapingEngine : harfbuzz
+   shapedText    : ""
+   shapedText codepoints: U+E000 U+E001 U+E002 U+E003 U+E004 U+E005 U+E006 U+E007 U+E008 U+E009 U+E006 U+E007 U+E005 U+E006 U+E007 U+E002 U+E003 U+E008 U+E007 U+E002 U+E003 U+E00A U+E004 U+E009
+   glyphIdMap keys: 11
+   charset size  : 20

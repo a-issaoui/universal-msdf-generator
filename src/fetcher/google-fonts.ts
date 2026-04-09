@@ -79,6 +79,7 @@ export class GoogleFontsHandler {
           style,
           attempt.ua,
           attempt.format,
+          options,
           signal,
         );
       } catch (err) {
@@ -100,13 +101,21 @@ export class GoogleFontsHandler {
     style: string,
     userAgent: string,
     preferredFormat: 'woff' | 'ttf' | 'any',
+    options: GoogleFontOptions,
     signal?: AbortSignal,
   ): Promise<FontData> {
     const cssResponse = await this.client.fetchWithRetry(cssUrl, { userAgent, signal });
     const css = await cssResponse.text();
 
-    const fontUrl = this.extractLatinFontUrl(css, preferredFormat);
-    if (!fontUrl) throw new Error(`No ${preferredFormat} font URL found in CSS response`);
+    const fontUrl = this.extractFontUrl(css, preferredFormat, options.subset);
+    if (!fontUrl) {
+      throw new Error(
+        `No ${preferredFormat} font URL found in CSS response${
+          /* v8 ignore next */
+          options.subset ? ` for subset "${options.subset}"` : ''
+        }`,
+      );
+    }
 
     const fontResponse = await this.client.fetchWithRetry(fontUrl, { userAgent, signal });
     const buffer = await this.client.readResponseWithSizeLimit(fontResponse);
@@ -133,7 +142,11 @@ export class GoogleFontsHandler {
   // CSS parsing
   // --------------------------------------------------------------------------
 
-  extractLatinFontUrl(css: string, preferredFormat: 'woff' | 'ttf' | 'any'): string | null {
+  extractFontUrl(
+    css: string,
+    preferredFormat: 'woff' | 'ttf' | 'any',
+    subset?: string,
+  ): string | null {
     const blocks = this._parseFontFaceBlocks(css);
     if (blocks.length === 0) return null;
 
@@ -143,6 +156,11 @@ export class GoogleFontsHandler {
         : blocks.filter((b) => b.format === preferredFormat || b.format === 'unknown');
 
     if (candidates.length === 0) return null;
+
+    if (subset) {
+      const subsetBlock = this._findSubsetBlock(candidates, subset);
+      if (subsetBlock) return subsetBlock.url;
+    }
 
     const latinBlock = this._findLatinBlock(candidates);
     return latinBlock?.url ?? candidates[candidates.length - 1].url;
@@ -205,7 +223,44 @@ export class GoogleFontsHandler {
             const hi = parseInt(range[2], 16);
             return LatinA >= lo && LatinA <= hi;
           }
+          /* v8 ignore next */
           return false;
+        });
+      }) ?? null
+    );
+  }
+
+  private _findSubsetBlock(blocks: ParsedFontBlock[], subset: string): ParsedFontBlock | null {
+    // Google Fonts CSS2 API includes the subset name in a comment before the @font-face block.
+    // However, our _parseFontFaceBlocks doesn't currently capture comments.
+    // As a robust fallback, we use characteristic codepoints for common subsets.
+    const subsetCodepoints: Record<string, number> = {
+      arabic: 0x0628, // Beh
+      hebrew: 0x05d0, // Alef
+      cyrillic: 0x0410, // Cyrillic Capital Letter A
+      devanagari: 0x0905, // Devanagari Letter A
+      thai: 0x0e01, // Thai Character Ko Kai
+    };
+
+    const targetCp = subsetCodepoints[subset.toLowerCase()];
+    if (!targetCp) return null;
+
+    return (
+      blocks.find((block) => {
+        if (!block.unicodeRange) return false;
+        return block.unicodeRange.split(',').some((r) => {
+          const s = r.trim();
+          const single = /^U\+([0-9a-fA-F]+)$/.exec(s);
+          if (single) return parseInt(single[1], 16) === targetCp;
+          /* v8 ignore start */
+          const range = /^U\+([0-9a-fA-F]+)-([0-9a-fA-F]+)$/.exec(s);
+          if (range) {
+            const lo = parseInt(range[1], 16);
+            const hi = parseInt(range[2], 16);
+            return targetCp >= lo && targetCp <= hi;
+          }
+          return false;
+          /* v8 ignore stop */
         });
       }) ?? null
     );

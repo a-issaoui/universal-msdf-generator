@@ -1,3 +1,7 @@
+/**
+ * Universal MSDF Generator - Enterprise-grade MSDF Font Generation
+ * Project Date: 8/2/2007
+ */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AtlasCallback } from './converter.js';
@@ -133,7 +137,10 @@ async function executeGen(
   const streamedAtlasPaths: string[] = [];
   const atlasCallback = await setupAtlasStreaming(options, identity, streamedAtlasPaths);
 
-  const result = await converter.convert(font.buffer, font.name, options, atlasCallback);
+  const result = await converter.convert(font.buffer, font.name, options, {
+    ...options,
+    onAtlas: atlasCallback,
+  });
 
   if (result.success) {
     result.fontName = identity;
@@ -153,12 +160,18 @@ async function executeGen(
         texture: Buffer.alloc(0),
       }));
     } else {
-      result.atlases = result.atlases.map((atlas, i) => ({
-        ...atlas,
-        filename: result.atlases.length > 1 ? `${identity}-${i}.png` : `${identity}.png`,
-      }));
+      result.atlases = result.atlases?.map(
+        (atlas: { filename: string; texture: Buffer }, i: number) => ({
+          ...atlas,
+          filename: result.atlases?.length > 1 ? `${identity}-${i}.png` : `${identity}.png`,
+        }),
+      );
     }
-    result.data = { ...result.data, pages: result.atlases.map((a) => a.filename) };
+    result.data = {
+      // biome-ignore lint/style/noNonNullAssertion: data is guaranteed to exist when success is true
+      ...result.data!,
+      pages: result.atlases?.map((a: { filename: string }) => a.filename),
+    };
 
     const fmt = options.outputFormat;
     if (fmt === 'fnt' || fmt === 'both' || fmt === 'all') {
@@ -213,6 +226,15 @@ class UniversalMSDFGenerator {
       verbose: true,
       ...(options || {}),
     };
+
+    // Auto-detect complex shaping requirements if not explicitly set
+    if (this.options.complexShaping === undefined && typeof this.options.charset === 'string') {
+      const c = this.options.charset;
+      const complexNames = ['arabic', 'persian', 'urdu', 'hebrew'];
+      if (complexNames.includes(c)) {
+        this.options.complexShaping = true;
+      }
+    }
   }
 
   private _useShared = false;

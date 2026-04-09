@@ -96,7 +96,16 @@ export interface CharsetOption {
 /**
  * Supported charset category names.
  */
-export type CharsetName = 'ascii' | 'alphanumeric' | 'latin' | 'cyrillic' | 'custom';
+export type CharsetName =
+  | 'ascii'
+  | 'alphanumeric'
+  | 'latin'
+  | 'cyrillic'
+  | 'custom'
+  | 'arabic'
+  | 'persian'
+  | 'urdu'
+  | 'hebrew';
 
 /**
  * Supported output formats.
@@ -153,10 +162,18 @@ export interface GenerateOptions {
   reuseExisting?: boolean;
   /** Force re-generation even if target files exist (overrides reuseExisting) */
   force?: boolean;
+  /** Use worker threads for parallel generation. Defaults to true in non-test environments. */
+  useWorkers?: boolean;
   /** Enable detailed logging */
   verbose?: boolean;
   /** Progress callback handler */
   onProgress?: (progress: number, completed: number, total: number) => void;
+  /** Atlas callback — invoked once per atlas page as it is rendered. */
+  onAtlas?: (
+    atlas: { filename: string; texture: Buffer },
+    index: number,
+    total: number,
+  ) => Promise<void>;
   /** Max ms to wait for MSDF generation before rejecting. Default: 60000. */
   generationTimeout?: number;
   /** Max concurrent fonts when using generateMultiple. Default: unlimited. */
@@ -168,6 +185,46 @@ export interface GenerateOptions {
    * such as full CJK (20 000+ glyphs). Default: false.
    */
   streamAtlases?: boolean;
+
+  /**
+   * Enable HarfBuzz text shaping for complex scripts (Arabic, Hebrew, Indic, etc.).
+   * Automatically set to true when charset is 'arabic', 'persian', 'urdu', or 'hebrew'.
+   * Requires `harfbuzzjs` to be installed as a peer dependency.
+   * @default false
+   */
+  complexShaping?: boolean;
+
+  /**
+   * The text to feed into HarfBuzz for shaping. When provided, only this text
+   * goes through the BiDi/shaping pipeline; the remaining chars in `charset`
+   * are loaded directly by their Unicode codepoints without shaping.
+   *
+   * Use this to prevent HarfBuzz BiDi from reversing LTR text when `charset`
+   * contains a mix of LTR (Latin) and RTL (Arabic/Hebrew) scripts.
+   * Example: charset = "Hello World\nمرحبا", shapingText = "مرحبا"
+   *
+   * When absent, the full `charset` is used as the shaping input (legacy behaviour).
+   */
+  shapingText?: string;
+
+  /**
+   * ISO 15924 four-letter script tag (e.g. 'Arab', 'Hebr', 'Deva', 'Thai').
+   * Required for HarfBuzz shaping when auto-detection is insufficient.
+   */
+  script?: string;
+
+  /**
+   * Text direction. Auto-detected from script when not set.
+   * @default 'rtl' for Arab/Hebr/Syrc scripts, 'ltr' otherwise
+   */
+  direction?: 'ltr' | 'rtl';
+
+  /**
+   * BCP 47 language tag for language-specific OpenType features.
+   * Persian ('fa') and Urdu ('ur') require different shaping rules from Arabic ('ar').
+   */
+  language?: string;
+
   /**
    * Base directory for local font file resolution.
    * When set, all local paths are resolved relative to this directory and
@@ -263,6 +320,12 @@ export interface MSDFSuccess {
     fieldRange: number;
     generatedAt: string;
     engine: string;
+    /** Shaping engine used. 'none' for Latin/CJK, 'harfbuzz' for Arabic/Hebrew, 'presentation-forms' for fallback. */
+    shapingEngine?: 'harfbuzz' | 'presentation-forms' | 'none';
+    /** Maps glyph IDs to source Unicode codepoints (only present when shapingEngine is 'harfbuzz') */
+    glyphIdMap?: Record<number, number>;
+    /** The input string transformed into its shaped visual representation (including PUA characters) */
+    shapedText?: string;
   };
 
   /** Decompression and format-level metadata from the source font. */
@@ -295,6 +358,8 @@ export interface MSDFCachedSuccess {
     fieldRange: number;
     generatedAt: string;
     engine: 'cached';
+    /** The shaped visual representation (retrieved from cache if previously generated) */
+    shapedText?: string;
   };
   /** Absolute paths to the existing files on disk */
   savedFiles: string[];

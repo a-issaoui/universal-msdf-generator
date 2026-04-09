@@ -134,6 +134,23 @@ describe('CLI', () => {
       expect(options.force).toBe(true);
     });
 
+    it('handles complex shaping, script, direction and language flags', () => {
+      const { options } = parseArgs([
+        'R',
+        '--complex-shaping',
+        '--script',
+        'Arab',
+        '--direction',
+        'rtl',
+        '--language',
+        'ar',
+      ]);
+      expect(options.complexShaping).toBe(true);
+      expect(options.script).toBe('Arab');
+      expect(options.direction).toBe('rtl');
+      expect(options.language).toBe('ar');
+    });
+
     it('handles negative flags and quiet mode', () => {
       const { options } = parseArgs(['R', '--no-fix-overlaps', '--quiet', '--no-reuse']);
       expect(options.fixOverlaps).toBe(false);
@@ -156,6 +173,12 @@ describe('CLI', () => {
     it('throws for invalid concurrency', () => {
       expect(() => parseArgs(['R', '--concurrency', '-1'])).toThrow(
         '--concurrency must be a positive number',
+      );
+    });
+
+    it('throws for invalid direction', () => {
+      expect(() => parseArgs(['R', '--direction', 'up'])).toThrow(
+        '--direction must be "ltr" or "rtl"',
       );
     });
 

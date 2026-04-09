@@ -7,6 +7,13 @@ import type { MSDFLayout, MSDFResult, MSDFSuccess, OutputFormat } from './types.
 // ---------------------------------------------------------------------------
 
 /**
+ * Generates an atlas filename based on texture count.
+ */
+export function generateAtlasName(fontName: string, index: number, count: number): string {
+  return count > 1 ? `${fontName}-${index}.png` : `${fontName}.png`;
+}
+
+/**
  * Validates a font buffer by checking magic bytes.
  */
 function validateFontBuffer(buffer: Buffer): boolean {
@@ -198,6 +205,7 @@ function createProgressCallback(
 // Charset Management
 // ---------------------------------------------------------------------------
 
+let _arabicCache: string | null = null;
 const COMMON_CHARSETS = {
   ascii: () => Array.from({ length: 95 }, (_, i) => String.fromCharCode(i + 32)).join(''),
   alphanumeric: () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
@@ -205,6 +213,44 @@ const COMMON_CHARSETS = {
     ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~¡¢£¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ',
   cyrillic: () =>
     ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя',
+  arabic: () => {
+    if (_arabicCache) return _arabicCache;
+    // 36 Arabic letters (including common variants like Alef with Hamza)
+    const letters =
+      '\u0621\u0622\u0623\u0624\u0625\u0626\u0627\u0628\u0629\u062A' +
+      '\u062B\u062C\u062D\u062E\u062F\u0630\u0631\u0632\u0633\u0634' +
+      '\u0635\u0636\u0637\u0638\u0639\u063A\u0641\u0642\u0643\u0644' +
+      '\u0645\u0646\u0647\u0648\u0649\u064A';
+    // Arabic-Indic numerals (U+0660–U+0669)
+    const numerals = '\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669';
+    // Tashkil diacritics (Fathah, Dammah, Kasrah, Sukun, Shaddah + Tanwin forms)
+    const tashkil = '\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655';
+    // Tatweel/Kashida elongation mark (repeated by renderer for justification)
+    const tatweel = '\u0640';
+    // Common punctuation
+    const punctuation = '\u060C\u061B\u061F\u0021\u002E\u003A\u0028\u0029';
+    _arabicCache = letters + numerals + tashkil + tatweel + punctuation;
+    return _arabicCache;
+  },
+
+  // Persian: Arabic + 4 Farsi-specific letters + Eastern Arabic numerals
+  persian: () =>
+    COMMON_CHARSETS.arabic() +
+    '\u067E\u0686\u0698\u06AF\u06CC' + // پ چ ژ گ ی (Persian Yeh)
+    '\u06F0\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7\u06F8\u06F9', // ۰–۹
+
+  // Urdu: Persian + Urdu-specific letters
+  urdu: () => `${COMMON_CHARSETS.persian()}\u0679\u0688\u0691\u06BA\u06BE\u06C1\u06C2\u06D2\u06D3`,
+
+  // Hebrew: 27 consonants + 5 final forms + Niqqud vowel points
+  hebrew: () => {
+    const consonants = Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0x05d0 + i)).join(
+      '',
+    );
+    const niqqud =
+      '\u05B0\u05B1\u05B2\u05B3\u05B4\u05B5\u05B6\u05B7\u05B8\u05B9\u05BB\u05BC\u05BD\u05BF\u05C1\u05C2';
+    return consonants + niqqud;
+  },
   custom: (chars: string) => chars.split(''),
 };
 const CHARSET_CACHE = new Map<string, string>();
@@ -213,6 +259,10 @@ function resolveStringCharset(c: string): string {
   if (c === 'alphanumeric') return COMMON_CHARSETS.alphanumeric();
   if (c === 'latin') return COMMON_CHARSETS.latin();
   if (c === 'cyrillic') return COMMON_CHARSETS.cyrillic();
+  if (c === 'arabic') return COMMON_CHARSETS.arabic();
+  if (c === 'persian') return COMMON_CHARSETS.persian();
+  if (c === 'urdu') return COMMON_CHARSETS.urdu();
+  if (c === 'hebrew') return COMMON_CHARSETS.hebrew();
   if (c === 'custom') {
     throw new Error('"custom" is a custom charset provider, not a preset name.');
   }

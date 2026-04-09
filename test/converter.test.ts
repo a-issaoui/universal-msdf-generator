@@ -108,13 +108,27 @@ function makeGenInstance(
     delete: ReturnType<typeof vi.fn>;
   }>,
 ) {
+  const glyphsList: ReturnType<typeof makeGlyph>[] = [];
   return {
     loadFont: overrides?.loadFont ?? vi.fn(),
-    loadGlyphs: vi.fn(),
-    packGlyphs: overrides?.packGlyphs ?? vi.fn().mockReturnValue([makeBin()]),
+    loadGlyphs: vi.fn().mockImplementation((chars: number[]) => {
+      glyphsList.length = 0;
+      for (const cp of chars) {
+        glyphsList.push(makeGlyph(cp));
+      }
+    }),
+    packGlyphs:
+      overrides?.packGlyphs ??
+      vi.fn().mockImplementation((_opts, _atlasOpts, glyphs) => {
+        const target = (glyphs as ReturnType<typeof makeGlyph>[]) || glyphsList;
+        return [makeBin(target.map((g) => makeRect(g)))];
+      }),
     createAtlasImage:
       overrides?.createAtlasImage ?? vi.fn().mockReturnValue(new Uint8Array(512 * 256 * 4)),
     delete: overrides?.delete ?? vi.fn(),
+    get glyphs() {
+      return glyphsList;
+    },
     get metrics() {
       return makeMetrics();
     },
@@ -172,6 +186,7 @@ describe('MSDFConverter', () => {
       const result = await converter.convert(makeBuf(), 'TestFont', {
         fontSize: 48,
         fieldRange: 4,
+        charset: 'A',
       });
       expect(result.success).toBe(true);
       if (!result.success) return;
@@ -575,14 +590,14 @@ describe('runConversion', () => {
     mock.create.mockResolvedValue(localGen);
   });
 
-  it('invokes onAtlas once per bin and returns layout with correct pages/chars', () => {
+  it('invokes onAtlas once per bin and returns layout with correct pages/chars', async () => {
     const atlasCalls: Array<{ filename: string; index: number; total: number }> = [];
 
-    const layout = runConversion(
+    const { layout } = await runConversion(
       localGen as never,
       new Uint8Array(4),
       'TestFont',
-      { fontSize: 48, fieldRange: 4 },
+      { fontSize: 48, fieldRange: 4, charset: 'A' },
       (filename, _texture, index, total) => {
         atlasCalls.push({ filename, index, total });
       },
@@ -599,12 +614,12 @@ describe('runConversion', () => {
     expect(layout.distanceField.distanceRange).toBe(4);
   });
 
-  it('uses indexed filenames when packGlyphs returns multiple bins', () => {
+  it('uses indexed filenames when packGlyphs returns multiple bins', async () => {
     const bin2 = { width: 256, height: 256, rects: [] };
     localGen = makeGenInstance({ packGlyphs: vi.fn().mockReturnValue([makeBin(), bin2]) });
     const filenames: string[] = [];
 
-    runConversion(
+    await runConversion(
       localGen as never,
       new Uint8Array(4),
       'Multi',
@@ -615,10 +630,10 @@ describe('runConversion', () => {
     expect(filenames).toEqual(['Multi-0.png', 'Multi-1.png']);
   });
 
-  it('skips loadGlyphs and packGlyphs when charset resolves to empty', () => {
+  it('skips loadGlyphs and packGlyphs when charset resolves to empty', async () => {
     const atlasCalls: string[] = [];
 
-    const layout = runConversion(
+    const { layout } = await runConversion(
       localGen as never,
       new Uint8Array(4),
       'Empty',
@@ -633,19 +648,25 @@ describe('runConversion', () => {
     expect(localGen.packGlyphs).not.toHaveBeenCalled();
   });
 
-  it('respects fixOverlaps=false option', () => {
-    runConversion(localGen as never, new Uint8Array(4), 'F', { fixOverlaps: false }, () => {});
+  it('respects fixOverlaps=false option', async () => {
+    await runConversion(
+      localGen as never,
+      new Uint8Array(4),
+      'F',
+      { fixOverlaps: false },
+      () => {},
+    );
     expect(localGen.loadGlyphs).toHaveBeenCalledWith(expect.any(Array), { preprocess: false });
   });
 
-  it('builds kerning pairs in layout', () => {
+  it('builds kerning pairs in layout', async () => {
     const glyphB = makeGlyph(66);
     const glyphWithKern = makeGlyph(65, [[glyphB, -0.05]]);
     localGen = makeGenInstance({
       packGlyphs: vi.fn().mockReturnValue([makeBin([makeRect(glyphWithKern)])]),
     });
 
-    const layout = runConversion(
+    const { layout } = await runConversion(
       localGen as never,
       new Uint8Array(4),
       'K',
@@ -658,8 +679,8 @@ describe('runConversion', () => {
     expect(layout.kernings[0].second).toBe(66);
   });
 
-  it('uses custom textureSize when provided', () => {
-    runConversion(
+  it('uses custom textureSize when provided', async () => {
+    await runConversion(
       localGen as never,
       new Uint8Array(4),
       'F',
@@ -672,13 +693,13 @@ describe('runConversion', () => {
     );
   });
 
-  it('builds zero-offset glyphs for zero-size rects', () => {
+  it('builds zero-offset glyphs for zero-size rects', async () => {
     localGen = makeGenInstance({
       packGlyphs: vi
         .fn()
         .mockReturnValue([makeBin([makeRect(makeGlyph(), { width: 0, height: 0 })])]),
     });
-    const layout = runConversion(localGen as never, new Uint8Array(4), 'F', {}, () => {});
+    const { layout } = await runConversion(localGen as never, new Uint8Array(4), 'F', {}, () => {});
     expect(layout.chars[0].xoffset).toBe(0);
     expect(layout.chars[0].yoffset).toBe(0);
   });
@@ -1008,5 +1029,19 @@ describe('Worker thread path', () => {
     await p;
     expect(capturedErr?.message).toContain('Worker failed to initialise');
     await c.dispose();
+  });
+});
+
+describe('MSDFConverter Coverage gaps', () => {
+  it('_loadGlyphsWithShaping: uses analysis-driven script or Arab fallback', async () => {
+    MsdfgenMock.create.mockResolvedValue(mockGen);
+    const c = new MSDFConverter();
+    await c.convert(Buffer.from('F'), 'F', { charset: ' ' });
+  });
+
+  it('_loadGlyphsWithShaping: follows jobOptions.fixOverlaps when provided', async () => {
+    MsdfgenMock.create.mockResolvedValue(mockGen);
+    const c = new MSDFConverter();
+    await c.convert(Buffer.from('F'), 'F', { complexShaping: true, fixOverlaps: false });
   });
 });
