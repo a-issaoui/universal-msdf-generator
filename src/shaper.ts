@@ -358,7 +358,10 @@ async function _doGetRequiredGlyphIds(
       ligatures,
       upem,
       collectedGlyphIds: Array.from(glyphIds),
-      shapedGlyphIds: shapedInfos.map((g) => g.glyphId),
+      shapedGlyphIds:
+        opts.direction === 'rtl'
+          ? shapedInfos.map((g) => g.glyphId).reverse()
+          : shapedInfos.map((g) => g.glyphId),
     };
   } finally {
     releaseCachedFace(fontBuffer);
